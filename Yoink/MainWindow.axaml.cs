@@ -1,10 +1,11 @@
 using System;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using YoutubeExplode;
@@ -15,12 +16,16 @@ namespace Yoink;
 public partial class MainWindow : Window
 {
     private readonly YoutubeClient _youtube = new();
+    private readonly ObservableCollection<DownloadHistoryEntry> _history = new(DownloadHistoryService.Load());
 
     public MainWindow()
     {
         InitializeComponent();
 
         CboTheme.SelectedIndex = (int)SettingsService.Load().Theme;
+
+        LstHistory.ItemsSource = _history;
+        UpdateEmptyHistoryVisibility();
     }
 
     private void CboTheme_SelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -42,14 +47,34 @@ public partial class MainWindow : Window
         ProgressBar.Value = 0;
         LblPercentage.Text = "0%";
 
+        var url = TxtUrl.Text ?? string.Empty;
+        var resolution = int.Parse(((ComboBoxItem)CboResolution.SelectedItem!).Content!.ToString()!);
+
         try
         {
-            var resolution = int.Parse(((ComboBoxItem)CboResolution.SelectedItem!).Content!.ToString()!);
-            await DownloadVideoAsync(TxtUrl.Text ?? string.Empty, resolution);
+            var (title, filePath) = await DownloadVideoAsync(url, resolution);
+            AddHistoryEntry(new DownloadHistoryEntry
+            {
+                Title = title,
+                Url = url,
+                Resolution = resolution,
+                FilePath = filePath,
+                DownloadedAt = DateTimeOffset.Now,
+                Status = DownloadStatus.Completed
+            });
             await MessageBoxWindow.ShowAsync(this, "Your download completed successfully.", "Download complete");
         }
         catch (Exception ex)
         {
+            AddHistoryEntry(new DownloadHistoryEntry
+            {
+                Title = string.IsNullOrWhiteSpace(url) ? "Unknown video" : url,
+                Url = url,
+                Resolution = resolution,
+                DownloadedAt = DateTimeOffset.Now,
+                Status = DownloadStatus.Failed,
+                ErrorMessage = ex.Message
+            });
             await MessageBoxWindow.ShowAsync(this, ex.Message, "Error");
         }
         finally
@@ -58,7 +83,47 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task DownloadVideoAsync(string url, int resolution)
+    private void AddHistoryEntry(DownloadHistoryEntry entry)
+    {
+        _history.Insert(0, entry);
+        DownloadHistoryService.Save(_history);
+        UpdateEmptyHistoryVisibility();
+    }
+
+    private void UpdateEmptyHistoryVisibility()
+    {
+        TxtEmptyHistory.IsVisible = _history.Count == 0;
+    }
+
+    /// <summary>
+    /// Opens the OS file manager at the downloaded file, so "Recent downloads" is actually useful
+    /// once a file has scrolled out of view in the app's own download directory.
+    /// </summary>
+    private static void ShowInFolder_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string filePath } || string.IsNullOrWhiteSpace(filePath))
+            return;
+
+        var directory = Path.GetDirectoryName(filePath);
+        if (directory is null)
+            return;
+
+        try
+        {
+            if (OperatingSystem.IsWindows())
+                Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{filePath}\"") { UseShellExecute = true });
+            else if (OperatingSystem.IsMacOS())
+                Process.Start(new ProcessStartInfo("open", $"-R \"{filePath}\"") { UseShellExecute = true });
+            else
+                Process.Start(new ProcessStartInfo("xdg-open", $"\"{directory}\"") { UseShellExecute = true });
+        }
+        catch
+        {
+            // Best-effort — not worth a dialog if the platform lacks a file manager to hand off to.
+        }
+    }
+
+    private async Task<(string Title, string FilePath)> DownloadVideoAsync(string url, int resolution)
     {
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("Please paste a YouTube video URL first.");
@@ -87,5 +152,7 @@ public partial class MainWindow : Window
         }));
 
         await _youtube.Videos.Streams.DownloadAsync(streamInfo, filePath, progress);
+
+        return (video.Title, filePath);
     }
 }

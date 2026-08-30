@@ -3,8 +3,114 @@
              x:Class="Yoink.App"
              RequestedThemeVariant="Default">
 
+    <!--
+        Design tokens. See BRANDING.md at the repo root for the rationale behind these values —
+        keep the two in sync when either changes.
+    -->
+    <Application.Resources>
+        <ResourceDictionary>
+
+            <!-- Accent, mapped onto FluentTheme's own accent keys so every built-in control
+                 (checkboxes, sliders, focus rings, ...) picks it up automatically. -->
+            <Color x:Key="SystemAccentColor">#6C5DD3</Color>
+            <Color x:Key="SystemAccentColorLight1">#8879E0</Color>
+            <Color x:Key="SystemAccentColorLight2">#A79CE8</Color>
+            <Color x:Key="SystemAccentColorLight3">#C6BEF0</Color>
+            <Color x:Key="SystemAccentColorDark1">#5347B0</Color>
+            <Color x:Key="SystemAccentColorDark2">#423890</Color>
+            <Color x:Key="SystemAccentColorDark3">#312A70</Color>
+
+            <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource SystemAccentColor}" />
+            <SolidColorBrush x:Key="AccentLightBrush" Color="{StaticResource SystemAccentColorLight1}" />
+            <SolidColorBrush x:Key="AccentDarkBrush" Color="{StaticResource SystemAccentColorDark1}" />
+
+            <!-- Semantic colors for download outcomes — never reused for actions/accents. -->
+            <Color x:Key="SuccessColor">#22B573</Color>
+            <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource SuccessColor}" />
+            <Color x:Key="ErrorColor">#E5484D</Color>
+            <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}" />
+            <Color x:Key="WarningColor">#F2A93B</Color>
+            <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource WarningColor}" />
+
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <Color x:Key="AppBackgroundColor">#F6F6FB</Color>
+                    <Color x:Key="CardBackgroundColor">#FFFFFF</Color>
+                    <Color x:Key="BorderColor2">#E7E7F0</Color>
+                    <Color x:Key="TextMutedColor">#6B6B7B</Color>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <Color x:Key="AppBackgroundColor">#121218</Color>
+                    <Color x:Key="CardBackgroundColor">#1B1B23</Color>
+                    <Color x:Key="BorderColor2">#2A2A34</Color>
+                    <Color x:Key="TextMutedColor">#9A9AA8</Color>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+
+            <SolidColorBrush x:Key="AppBackgroundBrush" Color="{DynamicResource AppBackgroundColor}" />
+            <SolidColorBrush x:Key="CardBackgroundBrush" Color="{DynamicResource CardBackgroundColor}" />
+            <SolidColorBrush x:Key="BorderBrush2" Color="{DynamicResource BorderColor2}" />
+            <SolidColorBrush x:Key="TextMutedBrush" Color="{DynamicResource TextMutedColor}" />
+
+        </ResourceDictionary>
+    </Application.Resources>
+
     <Application.Styles>
         <FluentTheme />
+
+        <Style Selector="Window">
+            <Setter Property="Background" Value="{DynamicResource AppBackgroundBrush}" />
+        </Style>
+
+        <Style Selector="TextBlock.AppTitle">
+            <Setter Property="FontSize" Value="26" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="TextBlock.Subtitle">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+        </Style>
+        <Style Selector="TextBlock.SectionTitle">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+        <Style Selector="TextBlock.Caption">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+        </Style>
+
+        <Style Selector="Border.Card">
+            <Setter Property="Background" Value="{DynamicResource CardBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush2}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="Padding" Value="20" />
+            <Setter Property="BoxShadow" Value="0 1 8 0 #14000000" />
+        </Style>
+
+        <Style Selector="TextBox">
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="10,8" />
+        </Style>
+        <Style Selector="ComboBox">
+            <Setter Property="CornerRadius" Value="8" />
+        </Style>
+
+        <Style Selector="Button.Primary">
+            <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="20,9" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style Selector="ProgressBar">
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="Height" Value="10" />
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        </Style>
+
     </Application.Styles>
 
 </Application>

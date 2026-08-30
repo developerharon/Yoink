@@ -8,7 +8,7 @@
 
     <StackPanel Margin="20" Spacing="16">
         <TextBlock Name="MessageText" TextWrapping="Wrap" />
-        <Button Name="OkButton" Content="OK" HorizontalAlignment="Right" Click="OkButton_Click" />
+        <Button Name="OkButton" Content="OK" Classes="Primary" HorizontalAlignment="Right" Click="OkButton_Click" />
     </StackPanel>
 
 </Window>
