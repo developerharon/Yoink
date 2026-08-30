@@ -2,31 +2,49 @@ using System;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
-using YoutubeExplode;
-using YoutubeExplode.Videos.Streams;
 
 namespace Yoink;
 
 public partial class MainWindow : Window
 {
-    private readonly YoutubeClient _youtube = new();
-    private readonly DownloadEngine _downloadEngine = new();
+    private readonly YtDlpClient _ytDlp = new();
+    private readonly DownloadQueueService _queue;
     private readonly ObservableCollection<DownloadHistoryEntry> _history = new(DownloadHistoryService.Load());
+
+    // Which queue item the progress bar/label are currently tracking. The queue can hold more
+    // than one pending item (its API already supports that), but this window's UI only ever
+    // shows one download at a time — a real queue view is a later roadmap step.
+    private long? _trackedItemId;
 
     public MainWindow()
     {
         InitializeComponent();
 
+        _queue = new DownloadQueueService(_ytDlp);
+        _queue.ItemChanged += OnQueueItemChanged;
+
         CboTheme.SelectedIndex = (int)SettingsService.Load().Theme;
 
         LstHistory.ItemsSource = _history;
         UpdateEmptyHistoryVisibility();
+
+        _ = WarnIfYtDlpMissingAsync();
+    }
+
+    private async Task WarnIfYtDlpMissingAsync()
+    {
+        if (!await _ytDlp.IsAvailableAsync())
+        {
+            await MessageBoxWindow.ShowAsync(
+                this,
+                "yt-dlp wasn't found on PATH, so downloads will fail until it's installed. See the README for setup instructions.",
+                "yt-dlp not found");
+        }
     }
 
     private void CboTheme_SelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -44,22 +62,33 @@ public partial class MainWindow : Window
 
     private async void BtnDownload_Click(object? sender, RoutedEventArgs e)
     {
+        var url = TxtUrl.Text ?? string.Empty;
+        var resolution = int.Parse(((ComboBoxItem)CboResolution.SelectedItem!).Content!.ToString()!);
+
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            await MessageBoxWindow.ShowAsync(this, "Please paste a YouTube video URL first.", "Error");
+            return;
+        }
+
         BtnDownload.IsEnabled = false;
         ProgressBar.Value = 0;
         LblPercentage.Text = "0%";
 
-        var url = TxtUrl.Text ?? string.Empty;
-        var resolution = int.Parse(((ComboBoxItem)CboResolution.SelectedItem!).Content!.ToString()!);
-
         try
         {
-            var (title, filePath) = await DownloadVideoAsync(url, resolution);
+            // Enqueue first so _trackedItemId is set before the download starts, otherwise the
+            // progress events fired while it runs would have nowhere to be attributed to.
+            var queued = await _queue.EnqueueAsync(url, resolution);
+            _trackedItemId = queued.Id;
+
+            var completed = await _queue.WaitForCompletionAsync(queued.Id);
             AddHistoryEntry(new DownloadHistoryEntry
             {
-                Title = title,
+                Title = completed.Title,
                 Url = url,
                 Resolution = resolution,
-                FilePath = filePath,
+                FilePath = completed.FilePath!,
                 DownloadedAt = DateTimeOffset.Now,
                 Status = DownloadStatus.Completed
             });
@@ -80,13 +109,27 @@ public partial class MainWindow : Window
         }
         finally
         {
+            _trackedItemId = null;
             BtnDownload.IsEnabled = true;
         }
     }
 
+    private void OnQueueItemChanged(DownloadQueueItem item)
+    {
+        if (item.Id != _trackedItemId)
+            return;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            ProgressBar.Value = item.Progress * 100;
+            LblPercentage.Text = $"{item.Progress * 100:0.##}%";
+        });
+    }
+
     protected override void OnClosed(EventArgs e)
     {
-        _downloadEngine.Dispose();
+        _queue.ItemChanged -= OnQueueItemChanged;
+        _queue.Dispose();
         base.OnClosed(e);
     }
 
@@ -128,42 +171,5 @@ public partial class MainWindow : Window
         {
             // Best-effort — not worth a dialog if the platform lacks a file manager to hand off to.
         }
-    }
-
-    private async Task<(string Title, string FilePath)> DownloadVideoAsync(string url, int resolution)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-            throw new ArgumentException("Please paste a YouTube video URL first.");
-
-        var streamManifest = await _youtube.Videos.Streams.GetManifestAsync(url);
-
-        // Prefer an exact match for the requested resolution, otherwise fall back to the
-        // closest muxed MP4 stream available (YouTube stopped serving muxed streams above
-        // 720p, so 1080/1440 will usually land here).
-        IStreamInfo? streamInfo = streamManifest.GetMuxedStreams()
-            .Where(s => s.Container == Container.Mp4)
-            .OrderBy(s => Math.Abs(s.VideoQuality.MaxHeight - resolution))
-            .FirstOrDefault();
-
-        if (streamInfo is null)
-            throw new InvalidOperationException("No downloadable MP4 stream was found for this video.");
-
-        var video = await _youtube.Videos.GetAsync(url);
-        var fileName = string.Concat(video.Title.Split(Path.GetInvalidFileNameChars())) + ".mp4";
-        var filePath = Path.Combine(AppContext.BaseDirectory, fileName);
-
-        var progress = new Progress<double>(p => Dispatcher.UIThread.Post(() =>
-        {
-            ProgressBar.Value = p * 100;
-            LblPercentage.Text = $"{p * 100:0.##}%";
-        }));
-
-        // Actual byte transfer goes through the core download engine (resumable range
-        // requests, retry-on-failure, cancellation) rather than YoutubeExplode's own
-        // Streams.DownloadAsync — YoutubeExplode is only used above to resolve the direct
-        // stream URL and video metadata.
-        await _downloadEngine.DownloadAsync(new Uri(streamInfo.Url), filePath, progress);
-
-        return (video.Title, filePath);
     }
 }
