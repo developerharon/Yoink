@@ -10,6 +10,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using FluentAvalonia.UI.Controls;
 using Yoink.Models;
 using Yoink.Services;
 
@@ -29,6 +30,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Icon = App.CurrentIcon;
 
         _queue = new DownloadQueueService(_ytDlp);
         _queue.ItemChanged += OnQueueItemChanged;
@@ -116,15 +118,65 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Theme/clipboard-watch/minimize-to-tray/concurrency/speed-limit/scheduling all live in
-    /// <see cref="SettingsWindow"/> now (README roadmap step 7) rather than scattered across this
-    /// window's header — open it modally and just let it persist its own changes; nothing needs
-    /// handing back since every consumer (this window's clipboard watcher, App.axaml.cs's Closing
-    /// handler, DownloadQueueService's loop) re-reads settings fresh at the point it needs them.
+    /// The nav bar has exactly one navigable destination — its own built-in Settings entry
+    /// (<c>FANavigationView.IsSettingsVisible</c>); Downloads is the home/dashboard, reached only via
+    /// the back button, never a menu item of its own. <c>e.IsSettingsSelected</c> is how
+    /// FluentAvalonia reports that entry being picked. Settings is a page in this same window now
+    /// (<see cref="SettingsView"/>, formerly the standalone <c>SettingsWindow</c>), not a modal —
+    /// swapping which <c>Border</c>/<see cref="SettingsView"/> is visible is enough, since neither
+    /// one needs anything handed back: every consumer (<see cref="_clipboardWatcher"/>,
+    /// App.axaml.cs's Closing handler, DownloadQueueService's loop) re-reads settings fresh at the
+    /// point it needs them regardless of which page is showing. The back button itself only appears
+    /// while on Settings — Downloads has nowhere to go "back" from, so it stays hidden there.
     /// </summary>
-    private async void BtnSettings_Click(object? sender, RoutedEventArgs e)
+    private void NavView_SelectionChanged(object? sender, FANavigationViewSelectionChangedEventArgs e)
     {
-        await new SettingsWindow().ShowDialog(this);
+        var showSettings = e.IsSettingsSelected;
+        DownloadsBody.IsVisible = !showSettings;
+        SettingsBody.IsVisible = showSettings;
+        NavView.IsBackButtonVisible = showSettings;
+        NavView.IsBackEnabled = showSettings;
+    }
+
+    /// <summary>
+    /// The nav bar's back arrow only ever needs to return to Downloads — there's nowhere deeper to
+    /// go back from yet, so this doesn't need an actual navigation stack. Everything a user actually
+    /// sees is handled by the four lines below; <c>NavView.SelectedItem = null</c> after them (there's
+    /// no "Downloads" item to select instead — see <see cref="NavView_SelectionChanged"/>) is purely
+    /// cosmetic bookkeeping to un-highlight the built-in Settings entry.
+    ///
+    /// That cleanup crashed in production with a <see cref="NullReferenceException"/> deep inside
+    /// FluentAvaloniaUI 3.1.0's own <c>ChangeSelection</c>/<c>RaiseItemInvoked</c>, called
+    /// synchronously from <c>set_SelectedItem</c> while still nested inside the control's own
+    /// <c>OnBackButtonClicked</c> call frame (see the stack trace this was diagnosed from). Isolated
+    /// testing (a throwaway headless Avalonia harness against both a synthetic <c>FANavigationView</c>
+    /// and this real <c>MainWindow</c>) could NOT reproduce it via a plain property assignment outside
+    /// that click's call stack, which points at reentrancy against work <c>OnBackButtonClicked</c> is
+    /// still doing when our handler runs — but that couldn't be proven with certainty without
+    /// literally clicking the rendered button, which this sandbox has no way to simulate. So: deferred
+    /// to the next UI-thread tick (lets <c>OnBackButtonClicked</c> finish first, which should avoid the
+    /// reentrancy if that's really the cause) AND wrapped in a targeted catch as a deliberate
+    /// belt-and-braces fallback — worst case if the deferral doesn't fully fix it, the gear stays
+    /// visually highlighted after going back, which is a real but minor cosmetic gap, not a crash.
+    /// </summary>
+    private void NavView_BackRequested(object? sender, FANavigationViewBackRequestedEventArgs e)
+    {
+        DownloadsBody.IsVisible = true;
+        SettingsBody.IsVisible = false;
+        NavView.IsBackButtonVisible = false;
+        NavView.IsBackEnabled = false;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            try
+            {
+                NavView.SelectedItem = null;
+            }
+            catch (NullReferenceException)
+            {
+                // See doc comment above — cosmetic only, the actual page swap above already happened.
+            }
+        });
     }
 
     private async void BtnAddDownload_Click(object? sender, RoutedEventArgs e)

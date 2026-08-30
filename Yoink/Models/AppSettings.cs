@@ -4,7 +4,7 @@ namespace Yoink.Models;
 
 /// <summary>
 /// User-configurable preferences for the app. Persisted to disk via <see cref="SettingsService"/>.
-/// All of it is surfaced through <c>Views.SettingsWindow</c>; nothing here needs pushing to a live
+/// All of it is surfaced through <c>Views.SettingsView</c>; nothing here needs pushing to a live
 /// component when it changes — <see cref="Services.DownloadQueueService"/> and
 /// <see cref="Services.ClipboardWatcherService"/> both re-read settings fresh at the point they
 /// need them (each processing-loop iteration, each clipboard poll) rather than being told about
@@ -13,6 +13,14 @@ namespace Yoink.Models;
 public class AppSettings
 {
     public ThemePreference Theme { get; set; } = ThemePreference.System;
+
+    /// <summary>
+    /// The one configurable color slot in the brand system (see BRANDING.md) — everything else
+    /// (neutrals, semantic status colors) is fixed. Purely cosmetic: it only recolors primary
+    /// buttons/progress bars/focus rings via <see cref="App.ApplyAccent"/>, so "pick whatever
+    /// matches your mood" in <c>Views.SettingsView</c> is a completely safe thing to invite.
+    /// </summary>
+    public AccentColor AccentColor { get; set; } = AccentColor.Blue;
 
     /// <summary>
     /// Whether <see cref="Services.ClipboardWatcherService"/> is active. On by default — it only
@@ -81,4 +89,19 @@ public enum ThemePreference
     System,
     Light,
     Dark
+}
+
+/// <summary>
+/// The five accent presets from BRANDING.md — the "blue button, or Ubuntu orange, or purple"
+/// setting. Each maps to a base/hover/active/soft/on-accent set of colors in
+/// <see cref="App.ApplyAccent"/>; adding a sixth later is one more case there plus one more swatch
+/// in <c>Views.SettingsView</c>.
+/// </summary>
+public enum AccentColor
+{
+    Blue,
+    Orange,
+    Purple,
+    Green,
+    Red
 }

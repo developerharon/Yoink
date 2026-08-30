@@ -1,0 +1,86 @@
+/* ==========================================================================
+   Yoink — Design Tokens
+   Neutral surfaces for light/dark mode + a fixed set of configurable accents.
+   Apply data-theme="dark" and data-accent="orange" (etc.) on <html> or root.
+   Unchanged since the claw-mark era of this brand package — same neutrals
+   and five accents, just a new mark/wordmark/badge set on top (see
+   BRAND-GUIDE.md).
+   ========================================================================== */
+
+:root,
+[data-theme="light"] {
+  --y-bg: #F7F8FA;
+  --y-surface: #FFFFFF;
+  --y-surface-2: #EEF0F3;
+  --y-border: #DCE0E5;
+  --y-text-primary: #1A1D23;
+  --y-text-secondary: #6B7280;
+  --y-shadow: rgba(16, 20, 26, 0.08);
+}
+
+[data-theme="dark"] {
+  --y-bg: #0F1115;
+  --y-surface: #171A21;
+  --y-surface-2: #1F232C;
+  --y-border: #2E3340;
+  --y-text-primary: #F0F2F5;
+  --y-text-secondary: #9AA1AC;
+  --y-shadow: rgba(0, 0, 0, 0.35);
+}
+
+/* ---- Accents: pick one at a time via data-accent on the root ---- */
+
+[data-accent="blue"] {
+  --y-accent: #2F6FED;
+  --y-accent-hover: #275DC7;
+  --y-accent-active: #1F4AA0;
+  --y-accent-soft: #E4ECFD;
+  --y-accent-soft-dark: rgba(47, 111, 237, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+[data-accent="orange"] {
+  /* Ubuntu orange */
+  --y-accent: #E95420;
+  --y-accent-hover: #C6431A;
+  --y-accent-active: #A23716;
+  --y-accent-soft: #FDEAE2;
+  --y-accent-soft-dark: rgba(233, 84, 32, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+[data-accent="purple"] {
+  --y-accent: #8B5CF6;
+  --y-accent-hover: #7C3AED;
+  --y-accent-active: #6D28D9;
+  --y-accent-soft: #F1EAFE;
+  --y-accent-soft-dark: rgba(139, 92, 246, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+[data-accent="green"] {
+  --y-accent: #22A06B;
+  --y-accent-hover: #1C8659;
+  --y-accent-active: #166B47;
+  --y-accent-soft: #E0F5EC;
+  --y-accent-soft-dark: rgba(34, 160, 107, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+[data-accent="red"] {
+  --y-accent: #E5484D;
+  --y-accent-hover: #CB3439;
+  --y-accent-active: #A82A2E;
+  --y-accent-soft: #FBE4E5;
+  --y-accent-soft-dark: rgba(229, 72, 77, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+/* Usage:
+   background: var(--y-bg);
+   .card { background: var(--y-surface); border: 1px solid var(--y-border); }
+   .btn-primary { background: var(--y-accent); color: var(--y-on-accent); }
+   .btn-primary:hover { background: var(--y-accent-hover); }
+   .progress-track { background: var(--y-accent-soft); }
+   .progress-fill { background: var(--y-accent); }
+*/

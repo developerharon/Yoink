@@ -47,12 +47,33 @@ project root — that's exactly the flat structure this reorg moved away from.
 
 ### Views (`Yoink/Views/`)
 
-- `MainWindow.axaml` / `.axaml.cs` — the queue view from README roadmap step 4: an `ItemsControl` bound to
-  an `ObservableCollection<DownloadQueueItem>`, one row per queue entry (title, status, a progress bar
-  when active/paused, and Pause/Resume/Cancel/Retry/"Show in folder" buttons — visibility of each driven by
-  `DownloadQueueItem`'s `CanPause`/`CanResume`/etc. computed properties, no converters needed). This is also
-  where "Recent downloads" ended up: the queue is never pruned, so completed/failed items just stay in the
-  same list rather than living in a separate history view.
+- `MainWindow.axaml` / `.axaml.cs` — the app shell **and** the queue view. The shell part is
+  FluentAvaloniaUI's `FANavigationView` (top-nav mode, `PaneDisplayMode="Top"`) wrapping everything: the
+  mark (`Path.YoinkMark`, see `BRANDING.md`) plus "Yoink" sit in `NavigationView.PaneCustomContent` (not
+  `PaneHeader` — that slot is simply never rendered in top-nav mode in FluentAvaloniaUI 3.1.0, confirmed by
+  rendering an actual frame rather than trusting the XAML compiled; see `BRANDING.md`'s "The mark" section),
+  and
+  FluentAvalonia's built-in Settings entry (`IsSettingsVisible="True"`) is the *only* menu item — deliberately
+  no "Downloads" item alongside it, since Downloads is the home/dashboard you land on, not a destination you
+  navigate to; it's what used to be a "⚙ Settings" button opening a separate modal window (`SettingsWindow`,
+  now deleted) — Settings is a page inside this same window now, not a popup, which is the whole reason this
+  shell exists (see the `ui-navigation-shell` project memory for why: a modal Settings window read as
+  "outside the app" no matter how it was styled). `NavView_SelectionChanged` reads `e.IsSettingsSelected`
+  (true only when that built-in entry is picked, since there's nothing else to select) and swaps which of
+  `DownloadsBody`/`SettingsBody` (two overlaid children of one `Grid`, toggled via `IsVisible` — not a
+  `Frame`/page navigation stack, since there are only ever these two pages) is showing, revealing the nav
+  bar's own back button (`IsBackButtonVisible`/`IsBackEnabled`, both otherwise `False` — the back button
+  only exists at all while on Settings, since Downloads has nowhere to go "back" from) at the same time;
+  `NavView_BackRequested` reverses both, hides the back button again, and clears `SelectedItem` to
+  un-highlight the Settings entry (there's no "Downloads" item to select instead). Neither page needs
+  anything handed back when the other is shown — every setting is read fresh at the point it's needed
+  regardless of which page is currently visible (see `SettingsView` below).
+  - The queue view itself (`DownloadsBody`) is unchanged in substance from before this shell existed: an
+    `ItemsControl` bound to an `ObservableCollection<DownloadQueueItem>`, one row per queue entry (title,
+    status, a progress bar when active/paused, and Pause/Resume/Cancel/Retry/"Show in folder" buttons —
+    visibility of each driven by `DownloadQueueItem`'s `CanPause`/`CanResume`/etc. computed properties, no
+    converters needed). This is also where "Recent downloads" ended up: the queue is never pruned, so
+    completed/failed items just stay in the same list rather than living in a separate history view.
   - The collection is seeded once at startup from `DownloadQueueService.GetAllAsync()`, then kept live via
     `DownloadQueueService.ItemChanged`: `OnQueueItemChanged` replaces the matching item in the collection
     wholesale (by `Id`) rather than mutating one already bound in the UI. `DownloadQueueItem` is a plain
@@ -63,9 +84,6 @@ project root — that's exactly the flat structure this reorg moved away from.
   - "+ Add download" opens `AddDownloadDialog`; the queue view doesn't need anything back from it — the new
     item shows up on its own via `ItemChanged`.
   - A missing `yt-dlp` on PATH is checked once at startup and surfaced via `MessageBoxWindow`.
-  - The header is now just the title and a single "⚙ Settings" button opening `SettingsWindow` (below) —
-    Theme/clipboard-watch/minimize-to-tray all moved there as of roadmap step 7 ("a settings screen to
-    control all of it"), so this window itself no longer holds any settings-editing controls or handlers.
   - `MainWindow_Opened` (not the constructor — the clipboard isn't guaranteed available before the window
     is attached to a screen) creates the `ClipboardWatcherService`, wired to `Window.Clipboard` via
     `ReadClipboardTextAsync` and to `AppSettings.ClipboardWatchEnabled` via a live `Func<bool>` passed to
@@ -89,18 +107,27 @@ project root — that's exactly the flat structure this reorg moved away from.
   throttled to roughly once a day via `AppSettings.LastUpdateCheckUtc`; per the agreed update UX (see the
   project memory this came from), this is the *only* place an update is ever downloaded or applied — the
   check itself is silent, but installing always needs this explicit prompt first.
-- `SettingsWindow.axaml` / `.axaml.cs` — the settings screen from README roadmap step 7 ("a settings
-  screen to control all of it"): Theme, "Watch clipboard", "Keep running in tray" (all moved here from
-  `MainWindow`'s header), plus the new concurrency/speed-limit/scheduling controls this step adds. Every
-  control persists its own change immediately via `SettingsService` (read-modify-write, same pattern the
-  header toggles used before) — there's no separate "Save" button, just "Close". Nothing here needs to
-  push a live update anywhere: `DownloadQueueService`'s processing loop and `ClipboardWatcherService` both
-  re-read settings fresh at the point they need them, so a change here takes effect on their very next
-  check (within one processing-loop iteration or clipboard poll). Speed limits use `NumericUpDown` with 0
-  or an empty field both meaning "unlimited" (`ToNullableLimit`); scheduling uses `TimePicker` (its
-  `SelectedTime` is a `TimeSpan?`, converted to/from `AppSettings`' `TimeOnly` fields by hand since there's
-  no built-in conversion). Opened modally via `new SettingsWindow().ShowDialog(owner)` from `MainWindow`'s
-  "⚙ Settings" button.
+- `SettingsView.axaml` / `.axaml.cs` — the settings screen from README roadmap step 7 ("a settings screen
+  to control all of it"), a `UserControl` (not a `Window` — it used to be `SettingsWindow`, opened modally;
+  see `MainWindow` above for why that changed) hosted as `MainWindow`'s `SettingsBody`. Content is grouped
+  into `FASettingsExpander`s (Appearance, Auto-catch & background, Downloads, Scheduling), each holding
+  `FASettingsExpanderItem` rows with the control in `.Footer` — FluentAvaloniaUI's own settings-page idiom,
+  modeled on Windows' own Settings app, rather than the hand-rolled `DockPanel` label+control rows this
+  used before. Covers: Theme; an accent-color picker (five round swatch buttons, `Classes="AccentSwatch"`
+  — see `BRANDING.md`/`App.ApplyAccent` for the preset values and how a click repaints the app live; the
+  clicked swatch's "Selected" class is toggled by `SetSelectedAccentSwatch`, called both on click and once
+  at construction from the persisted `AppSettings.AccentColor`); "Watch clipboard"/"Keep running in tray"
+  (now `ToggleSwitch` rather than `CheckBox`, to match the expander-row idiom — `IsCheckedChanged` behaves
+  identically either way, both derive from `ToggleButton`); and the concurrency/speed-limit/scheduling
+  controls from this same step. Every control persists its own change immediately via `SettingsService`
+  (read-modify-write) — there's no "Save" button; the nav bar's back arrow (see `MainWindow` above) is the
+  only way out, and doesn't need to trigger anything since every change already committed on the spot.
+  Nothing here needs to push a live update anywhere: `DownloadQueueService`'s processing loop and
+  `ClipboardWatcherService` both re-read settings fresh at the point they need them, so a change here takes
+  effect on their very next check (within one processing-loop iteration or clipboard poll). Speed limits
+  use `NumericUpDown` with 0 or an empty field both meaning "unlimited" (`ToNullableLimit`); scheduling
+  uses `TimePicker` (its `SelectedTime` is a `TimeSpan?`, converted to/from `AppSettings`' `TimeOnly` fields
+  by hand since there's no built-in conversion).
 - `MessageBoxWindow.axaml` / `.axaml.cs` — a minimal modal dialog (title + message + OK button) used in
   place of WinForms' `MessageBox`, which Avalonia doesn't provide out of the box. Use
   `MessageBoxWindow.ShowAsync(owner, message, title)` for anything that genuinely needs a blocking
@@ -172,7 +199,7 @@ project root — that's exactly the flat structure this reorg moved away from.
   action are kept separate. Whether it's active is a caller-supplied `Func<bool> isEnabled`, checked fresh
   on every poll — not a settable property — so `Views.MainWindow` can hand it
   `() => SettingsService.Load().ClipboardWatchEnabled` once and never need to push a live update when the
-  setting changes elsewhere (`SettingsWindow`, in particular). Known limitation, called out in its doc
+  setting changes elsewhere (`SettingsView`, in particular). Known limitation, called out in its doc
   comment: Wayland compositors can restrict clipboard reads when the app isn't focused, so detection may be
   less reliable there than on X11 or Windows while the app is in the background.
 - `NotificationService.cs` — the notifications half of "background operation & notifications" (README
@@ -204,9 +231,13 @@ project root — that's exactly the flat structure this reorg moved away from.
 
 - `AppSettings.cs` — `AppSettings` + `ThemePreference`. Theme mapping itself
   (`ThemePreference` → Avalonia's `ThemeVariant`) stays in `App.ToThemeVariant` (see below), not here.
-  Every property here is surfaced through `Views.SettingsWindow` and re-read fresh by whatever needs it
+  Every property here is surfaced through `Views.SettingsView` and re-read fresh by whatever needs it
   (`DownloadQueueService`'s loop, `ClipboardWatcherService`'s poll, `App.axaml.cs`'s Closing handler) rather
-  than pushed to it live — see the class doc comment. Besides `Theme`: `ClipboardWatchEnabled` (default
+  than pushed to it live — see the class doc comment. Besides `Theme`: `AccentColor` (default `Blue` —
+  the one user-configurable color slot from `BRANDING.md`'s five presets, applied via `App.ApplyAccent`
+  and, unlike the rest of this class, pushed live the moment it changes rather than read lazily, the same
+  way `Theme` already is — this now includes the window/taskbar/tray icon itself, not just in-app colors,
+  see `App.ApplyAccent`'s doc comment), `ClipboardWatchEnabled` (default
   `true`) and `MinimizeToTrayOnClose` (default `false` — see its own doc comment for why this one defaults
   off while clipboard watching defaults on); and, from roadmap step 7,
   `MaxConcurrentDownloads`/`PerDownloadSpeedLimitKBps`/`GlobalSpeedLimitKBps`/`SchedulingEnabled`/
@@ -232,12 +263,15 @@ project root — that's exactly the flat structure this reorg moved away from.
   `BuildAvaloniaApp()` is even touched — see `UpdateService`'s notes above for exactly why that ordering is
   load-bearing, not just tidiness. After that, builds and starts the Avalonia app
   (`AppBuilder.Configure<App>()...StartWithClassicDesktopLifetime`).
-- `App.axaml` / `App.axaml.cs` — Avalonia `Application` bootstrap; sets the Fluent theme, creates `MainWindow` as the desktop lifetime's main window, and (`SetUpTrayIcon`) sets up the tray icon side of README roadmap step 6's "background operation": a `TrayIcon` with Show/Quit `NativeMenuItem`s, and a `MainWindow.Closing` handler that only ever intercepts a user-initiated close (`WindowCloseReason.WindowClosing` specifically — an app- or OS-driven shutdown is deliberately let through unmodified, or `desktop.TryShutdown()` from the tray menu's "Quit" would never actually terminate). What that intercepted close *does* depends on `AppSettings.MinimizeToTrayOnClose`: hide the window if it's on, or call `desktop.TryShutdown()` itself if it's off (the desktop lifetime is switched to `ShutdownMode.OnExplicitShutdown` up front specifically so this handler is always the one deciding, rather than an implicit shutdown racing it). Defaulting that setting to off — rather than clipboard watching's default-on — is deliberate: an unsupported tray (plain GNOME without an extension, for instance) would otherwise strand the window hidden with no visible way back.
-- `Assets/tray-icon.png` — the one app icon, used for the tray icon, `MainWindow`'s and `UpdatePromptDialog`'s window icons, and (for now — see the release workflow note below) the Velopack package icon on every platform. Included via `<AvaloniaResource Include="Assets/**" />` in `Yoink.csproj`; reference new assets the same way rather than embedding them another way.
-- Theme: `App.axaml` sets `RequestedThemeVariant` at startup from the saved preference (`ThemePreference.System/Light/Dark` in `AppSettings`). `System` maps to Avalonia's `ThemeVariant.Default`, which follows the OS light/dark setting live. `Views.SettingsWindow`'s Theme combo box flips `Application.Current.RequestedThemeVariant` immediately and persists the choice via `SettingsService`. `App.ToThemeVariant` is the single place that maps preference → `ThemeVariant`; reuse it rather than re-deriving the mapping.
+- `App.axaml` / `App.axaml.cs` — Avalonia `Application` bootstrap; sets FluentAvaloniaUI's `FluentAvaloniaTheme` (not vanilla Avalonia's `FluentTheme` — see the `ui-navigation-shell` project memory for why this package was added and the navigation shell it enables in `MainWindow`), creates `MainWindow` as the desktop lifetime's main window, and (`SetUpTrayIcon`) sets up the tray icon side of README roadmap step 6's "background operation": a `TrayIcon` with Show/Quit `NativeMenuItem`s, and a `MainWindow.Closing` handler that only ever intercepts a user-initiated close (`WindowCloseReason.WindowClosing` specifically — an app- or OS-driven shutdown is deliberately let through unmodified, or `desktop.TryShutdown()` from the tray menu's "Quit" would never actually terminate). What that intercepted close *does* depends on `AppSettings.MinimizeToTrayOnClose`: hide the window if it's on, or call `desktop.TryShutdown()` itself if it's off (the desktop lifetime is switched to `ShutdownMode.OnExplicitShutdown` up front specifically so this handler is always the one deciding, rather than an implicit shutdown racing it). Defaulting that setting to off — rather than clipboard watching's default-on — is deliberate: an unsupported tray (plain GNOME without an extension, for instance) would otherwise strand the window hidden with no visible way back. `OnFrameworkInitializationCompleted` also calls the static `App.ApplyAccent(AccentColor)` (once at startup from `AppSettings.AccentColor`, and again from `Views.SettingsView`'s swatch buttons) — it overwrites `SystemAccentColor`/its Light1-3/Dark1-3 siblings plus this app's own `AccentBrush`/`AccentSoftBrush`/`OnAccentBrush` resources in place, so every control bound to them via `DynamicResource` repaints without anyone pushing a notification. It also loads the matching `Assets/app-icons/app-icon-{accent}.png` into the static `App.CurrentIcon` and pushes it onto every open `Window` (via `desktop.Windows`) plus the tray icon (`_trayIcon`, set once in `SetUpTrayIcon`) — a freshly-constructed window just reads `App.CurrentIcon` itself in its own constructor rather than repeating the accent lookup. It also subscribes to `ActualThemeVariantChanged` to re-run itself, since `AccentSoftBrush` differs by light/dark, not just by preset — see its own doc comment for the light-tint-vs-dark-alpha-wash reasoning and where the five presets' hex values come from (`BRANDING.md`).
+- `Assets/app-icons/app-icon-{blue,orange,purple,green,red}.png` — the app/window/taskbar/tray icon, one per accent preset, applied live by `App.ApplyAccent` (see above) rather than one fixed icon like the old `tray-icon.png` (deleted — this fully replaces it, including as the Velopack package icon on every platform, see the release workflow note below). Generated from `Assets/brand/badges/yoink-badge-*.svg`'s exact geometry via a one-off SkiaSharp render — see `BRANDING.md`'s "The mark" section for the recipe if the mark ever changes and these need regenerating. Included via `<AvaloniaResource Include="Assets/**" />` in `Yoink.csproj`, same as every other asset. `Assets/brand/` holds the separate design-tokens/mark/wordmark/badge SVGs these PNGs (and the header's native `Path.YoinkMark`) were sourced from — see `BRANDING.md` for the full breakdown of what's wired into the running app versus staged for reference.
+- Theme: `App.axaml` sets `RequestedThemeVariant` at startup from the saved preference (`ThemePreference.System/Light/Dark` in `AppSettings`). `System` maps to Avalonia's `ThemeVariant.Default`, which follows the OS light/dark setting live. `Views.SettingsView`'s Theme combo box flips `Application.Current.RequestedThemeVariant` immediately and persists the choice via `SettingsService`. `App.ToThemeVariant` is the single place that maps preference → `ThemeVariant`; reuse it rather than re-deriving the mapping.
 - **`BRANDING.md`** (repo root) — the design tokens (colors, type, spacing/radius) implemented as Avalonia resources/style classes in `App.axaml`. Read it before adding new UI: reuse the existing style classes (`Card`, `AppTitle`, `Subtitle`, `SectionTitle`, `Caption`, `Primary` on buttons) instead of one-off styling, so new screens stay visually consistent with the rest of the app.
 - `.github/workflows/release.yml` — cuts a Velopack release on every `v*` tag push (`git tag v0.1.0 && git
-  push origin v0.1.0`), uploading packaged builds straight to this repo's GitHub Releases (no separate
+  push origin v0.1.0`). `vpk pack`'s `--icon` always points at `Assets/app-icons/app-icon-blue.png`
+  specifically (not whichever accent a given user happens to have picked in-app) — the package/installer
+  icon is this app's one fixed public identity, unrelated to `App.ApplyAccent`'s live per-window icon
+  swapping (see `Assets/app-icons/...` above). Uploading packaged builds straight to this repo's GitHub Releases (no separate
   hosting — see the `update-distribution-strategy` project memory for why, including how download counts
   and traffic are visible there for free without building any telemetry). All three platform jobs are
   defined, but per the agreed rollout order (Ubuntu first) the `release-windows`/`release-macos` jobs carry
@@ -272,3 +306,28 @@ repeat here even though they're also covered where the relevant code lives:
   subtly different — e.g. `ApplyUpdatesAndRestart` takes a `VelopackAsset`, not the `UpdateInfo` itself)
   is worth re-verifying the same way before making further changes here, rather than assuming docs/memory
   are exactly right — Velopack is under active development.
+
+### Key dependency: FluentAvaloniaUI (NuGet package)
+
+[FluentAvaloniaUI](https://github.com/amwx/FluentAvalonia) (MIT-licensed) supplies the app's navigation
+shell — `MainWindow`'s `FANavigationView` and `SettingsView`'s `FASettingsExpander`/`FASettingsExpanderItem`
+groups — plus `styling:FluentAvaloniaTheme` in `App.axaml`, which replaced vanilla Avalonia's `<FluentTheme
+/>` app-wide (it's a superset covering the same base controls, so nothing outside `MainWindow`/`SettingsView`
+needed to change). See the `ui-navigation-shell` project memory for why this was added (a modal
+`SettingsWindow` read as disconnected from the rest of the app, however it was styled) and for a validated
+throwaway demo confirming the approach before it touched real code. One detail worth repeating here since
+it's easy to get wrong from memory or older docs/tutorials: **this package's 3.x line prefixes every one of
+its own custom control/event-args types with `FA`** — `FANavigationView`, `FANavigationViewItem`,
+`FASettingsExpander`, `FASettingsExpanderItem`, `FASymbolIconSource`, `FANavigationViewSelectionChangedEventArgs`,
+`FANavigationViewBackRequestedEventArgs`, etc. (property/event *names* on those types are unprefixed and
+unchanged from what older 2.x-era docs show — it's only the type names that changed). Confirmed by
+inspecting the actual installed 3.1.0 DLL in this session rather than trusted from docs, the same way
+Velopack's API is verified above — re-check the same way against whatever version is actually installed
+before assuming a type name from a tutorial or an older FluentAvalonia app is still correct.
+
+A second gotcha, same lesson: `FANavigationView.PaneHeader`/`PaneTitle` **compile fine and simply never
+render anything** when `PaneDisplayMode="Top"` — only `PaneCustomContent` actually shows up on the left in
+that mode. This shipped once (the icon+"Yoink" silently missing from the nav bar) before being caught by
+rendering `MainWindow` headless to an actual bitmap and looking at it, rather than trusting that XAML which
+compiles must also render — see the `headless-visual-verification` project memory for the technique, worth
+reusing for any future Avalonia layout question in this repo rather than assuming from properties existing.

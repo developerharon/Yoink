@@ -21,6 +21,7 @@ public partial class UpdatePromptDialog : Window
     public UpdatePromptDialog()
     {
         InitializeComponent();
+        Icon = App.CurrentIcon;
     }
 
     public static Task ShowAsync(Window owner, UpdateService updates, UpdateInfo updateInfo)

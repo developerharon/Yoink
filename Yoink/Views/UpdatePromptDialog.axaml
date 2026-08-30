@@ -2,7 +2,6 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Yoink.Views.UpdatePromptDialog"
         Title="Update available"
-        Icon="/Assets/tray-icon.png"
         Width="440" SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
         CanResize="false">

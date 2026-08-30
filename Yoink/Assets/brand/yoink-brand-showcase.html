@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-accent="blue">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yoink — Brand Showcase</title>
+<style>
+/* ==========================================================================
+   Yoink — Design Tokens
+   Neutral surfaces for light/dark mode + a fixed set of configurable accents.
+   Apply data-theme="dark" and data-accent="orange" (etc.) on <html> or root.
+   ========================================================================== */
+
+:root,
+[data-theme="light"] {
+  --y-bg: #F7F8FA;
+  --y-surface: #FFFFFF;
+  --y-surface-2: #EEF0F3;
+  --y-border: #DCE0E5;
+  --y-text-primary: #1A1D23;
+  --y-text-secondary: #6B7280;
+  --y-shadow: rgba(16, 20, 26, 0.08);
+}
+
+[data-theme="dark"] {
+  --y-bg: #0F1115;
+  --y-surface: #171A21;
+  --y-surface-2: #1F232C;
+  --y-border: #2E3340;
+  --y-text-primary: #F0F2F5;
+  --y-text-secondary: #9AA1AC;
+  --y-shadow: rgba(0, 0, 0, 0.35);
+}
+
+/* ---- Accents: pick one at a time via data-accent on the root ---- */
+
+[data-accent="blue"] {
+  --y-accent: #2F6FED;
+  --y-accent-hover: #275DC7;
+  --y-accent-active: #1F4AA0;
+  --y-accent-soft: #E4ECFD;
+  --y-accent-soft-dark: rgba(47, 111, 237, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+[data-accent="orange"] {
+  /* Ubuntu orange */
+  --y-accent: #E95420;
+  --y-accent-hover: #C6431A;
+  --y-accent-active: #A23716;
+  --y-accent-soft: #FDEAE2;
+  --y-accent-soft-dark: rgba(233, 84, 32, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+[data-accent="purple"] {
+  --y-accent: #8B5CF6;
+  --y-accent-hover: #7C3AED;
+  --y-accent-active: #6D28D9;
+  --y-accent-soft: #F1EAFE;
+  --y-accent-soft-dark: rgba(139, 92, 246, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+[data-accent="green"] {
+  --y-accent: #22A06B;
+  --y-accent-hover: #1C8659;
+  --y-accent-active: #166B47;
+  --y-accent-soft: #E0F5EC;
+  --y-accent-soft-dark: rgba(34, 160, 107, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+[data-accent="red"] {
+  --y-accent: #E5484D;
+  --y-accent-hover: #CB3439;
+  --y-accent-active: #A82A2E;
+  --y-accent-soft: #FBE4E5;
+  --y-accent-soft-dark: rgba(229, 72, 77, 0.18);
+  --y-on-accent: #FFFFFF;
+}
+
+/* Usage:
+   background: var(--y-bg);
+   .card { background: var(--y-surface); border: 1px solid var(--y-border); }
+   .btn-primary { background: var(--y-accent); color: var(--y-on-accent); }
+   .btn-primary:hover { background: var(--y-accent-hover); }
+   .progress-track { background: var(--y-accent-soft); }
+   .progress-fill { background: var(--y-accent); }
+*/
+
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'Poppins', 'Segoe UI', system-ui, sans-serif;
+  background: var(--y-bg);
+  color: var(--y-text-primary);
+  transition: background 0.25s ease, color 0.25s ease;
+  padding: 0 0 80px 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 32px;
+  border-bottom: 1px solid var(--y-border);
+  position: sticky;
+  top: 0;
+  background: var(--y-bg);
+  z-index: 10;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.brand-lockup { display: flex; align-items: center; height: 40px; color: var(--y-accent); }
+.brand-lockup svg { height: 100%; width: auto; }
+
+.controls { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+
+.control-group { display: flex; align-items: center; gap: 8px; }
+.control-group label { font-size: 13px; color: var(--y-text-secondary); font-weight: 500; }
+
+.theme-toggle {
+  display: flex; border: 1px solid var(--y-border); border-radius: 8px; overflow: hidden;
+}
+.theme-toggle button {
+  border: none; background: var(--y-surface); color: var(--y-text-secondary);
+  padding: 7px 14px; font-size: 13px; cursor: pointer; font-family: inherit; font-weight: 500;
+}
+.theme-toggle button.active { background: var(--y-accent); color: var(--y-on-accent); }
+
+.swatch-row { display: flex; gap: 8px; }
+.swatch {
+  width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent;
+  cursor: pointer; padding: 0; position: relative;
+}
+.swatch.active { border-color: var(--y-text-primary); }
+
+main { max-width: 1040px; margin: 0 auto; padding: 48px 32px; }
+
+section { margin-bottom: 64px; }
+h2 {
+  font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--y-text-secondary); font-weight: 600; margin-bottom: 20px;
+}
+
+.hero {
+  display: flex; align-items: center; gap: 28px; padding: 56px 40px;
+  background: var(--y-surface); border: 1px solid var(--y-border); border-radius: 20px;
+}
+.hero .mark { height: 96px; width: 96px; color: var(--y-accent); flex-shrink: 0; }
+.hero .mark svg { width: 100%; height: 100%; }
+.hero-text h1 { margin: 0 0 8px 0; font-size: 34px; letter-spacing: -0.01em; }
+.hero-text p { margin: 0; color: var(--y-text-secondary); font-size: 15px; max-width: 46ch; }
+
+.badge-grid {
+  display: flex; flex-wrap: wrap; gap: 16px;
+}
+.badge {
+  width: 84px; height: 84px; border-radius: 20px; display: flex; align-items: center; justify-content: center;
+  background: var(--y-accent); color: #FAFBFC; flex-shrink: 0;
+}
+.badge svg { width: 72px; height: 72px; }
+
+.on-bg-row { display: flex; flex-wrap: wrap; gap: 0; border-radius: 16px; overflow: hidden; }
+.on-bg-cell {
+  flex: 1; min-width: 140px; height: 168px; display: flex; align-items: center; justify-content: center;
+  position: relative;
+}
+.on-bg-cell .mark-inner { width: 52px; height: 52px; }
+.on-bg-cell .mark-inner svg { width: 100%; height: 100%; display: block; }
+.on-bg-cell .cell-label {
+  position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; font-size: 11px; color: rgba(255,255,255,0.85);
+  font-weight: 600; letter-spacing: 0.02em;
+}
+
+.type-sample { background: var(--y-surface); border: 1px solid var(--y-border); border-radius: 16px; padding: 32px; }
+.type-sample .wordmark { height: 52px; color: var(--y-accent); margin-bottom: 20px; }
+.type-sample .wordmark svg { height: 100%; width: auto; }
+.type-row { display: flex; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--y-border); }
+.type-row:first-of-type { border-top: none; }
+.type-row .label { width: 90px; font-size: 12px; color: var(--y-text-secondary); flex-shrink: 0; }
+
+.color-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 14px; }
+.color-card {
+  border-radius: 14px; overflow: hidden; border: 1px solid var(--y-border); background: var(--y-surface);
+}
+.color-card .swatch-block { height: 64px; }
+.color-card .info { padding: 12px 14px; }
+.color-card .info .name { font-size: 13px; font-weight: 600; }
+.color-card .info .hex { font-size: 12px; color: var(--y-text-secondary); font-family: ui-monospace, monospace; }
+
+.ui-demo {
+  display: grid; grid-template-columns: 1.1fr 1fr; gap: 20px;
+}
+@media (max-width: 720px) { .ui-demo { grid-template-columns: 1fr; } }
+
+.card { background: var(--y-surface); border: 1px solid var(--y-border); border-radius: 16px; padding: 24px; }
+.card h3 { margin: 0 0 4px 0; font-size: 15px; }
+.card .muted { color: var(--y-text-secondary); font-size: 13px; margin: 0 0 18px 0; }
+
+.btn {
+  border: none; border-radius: 10px; padding: 11px 20px; font-size: 14px; font-weight: 600;
+  font-family: inherit; cursor: pointer; background: var(--y-accent); color: var(--y-on-accent);
+  transition: background 0.15s ease;
+}
+.btn:hover { background: var(--y-accent-hover); }
+.btn-ghost {
+  border: 1px solid var(--y-border); border-radius: 10px; padding: 10px 19px; font-size: 14px;
+  font-weight: 600; font-family: inherit; cursor: pointer; background: transparent; color: var(--y-text-primary);
+  margin-left: 10px;
+}
+
+.download-item { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-top: 1px solid var(--y-border); }
+.download-item:first-child { border-top: none; padding-top: 0; }
+.file-icon {
+  width: 38px; height: 38px; border-radius: 10px; background: var(--y-accent-soft);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--y-accent);
+}
+.file-icon svg { width: 20px; height: 20px; }
+.file-meta { flex: 1; min-width: 0; }
+.file-name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-sub { font-size: 12px; color: var(--y-text-secondary); margin-top: 2px; }
+.progress-track { height: 6px; border-radius: 3px; background: var(--y-accent-soft); margin-top: 8px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--y-accent); border-radius: 3px; }
+
+footer { text-align: center; color: var(--y-text-secondary); font-size: 12.5px; padding-top: 24px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand-lockup"><svg viewBox="0 0 454 138" xmlns="http://www.w3.org/2000/svg">
+  
+  <svg x="10" y="10" width="118" height="118" viewBox="0 0 100 100">
+    
+  
+  <rect x="14" y="14" width="72" height="72" rx="18" fill="none" stroke="currentColor" stroke-width="7"/>
+  <path d="M 34,32 L 50,50 L 66,32 M 50,50 L 50,64 Q 50,71 43,71" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+
+  </svg>
+  <g transform="translate(154.0,104.0)" fill="currentColor">
+    <path d="M66.4 -70.2 42.1 -23.200000000000003V0.0H25.0V-23.200000000000003L0.7000000000000001 -70.2H20.1L33.7 -40.800000000000004L47.2 -70.2Z M69.9 -27.900000000000002Q69.9 -36.5 73.70000000000002 -43.05Q77.50000000000001 -49.6 84.10000000000002 -53.1Q90.70000000000002 -56.6 98.9 -56.6Q107.10000000000001 -56.6 113.70000000000002 -53.1Q120.30000000000001 -49.6 124.10000000000001 -43.05Q127.9 -36.5 127.9 -27.900000000000002Q127.9 -19.3 124.05000000000001 -12.75Q120.20000000000002 -6.2 113.55000000000001 -2.7Q106.9 0.8 98.70000000000002 0.8Q90.50000000000001 0.8 83.95000000000002 -2.7Q77.4 -6.2 73.65 -12.700000000000001Q69.9 -19.200000000000003 69.9 -27.900000000000002ZM110.50000000000001 -27.900000000000002Q110.50000000000001 -34.6 107.15 -38.2Q103.80000000000001 -41.800000000000004 98.9 -41.800000000000004Q93.9 -41.800000000000004 90.60000000000001 -38.25Q87.30000000000001 -34.7 87.30000000000001 -27.900000000000002Q87.30000000000001 -21.200000000000003 90.55000000000001 -17.6Q93.80000000000001 -14.0 98.70000000000002 -14.0Q103.60000000000001 -14.0 107.05000000000001 -17.6Q110.50000000000001 -21.200000000000003 110.50000000000001 -27.900000000000002Z M135.4 -70.8Q135.4 -74.8 138.25 -77.45Q141.10000000000002 -80.10000000000001 145.60000000000002 -80.10000000000001Q150.0 -80.10000000000001 152.85000000000002 -77.45Q155.70000000000002 -74.8 155.70000000000002 -70.8Q155.70000000000002 -66.9 152.85000000000002 -64.25Q150.0 -61.6 145.60000000000002 -61.6Q141.10000000000002 -61.6 138.25 -64.25Q135.4 -66.9 135.4 -70.8ZM154.10000000000002 -55.800000000000004V0.0H137.0V-55.800000000000004Z M222.0 -32.6V0.0H205.0V-30.3Q205.0 -35.9 202.10000000000002 -39.0Q199.20000000000002 -42.1 194.3 -42.1Q189.4 -42.1 186.5 -39.0Q183.60000000000002 -35.9 183.60000000000002 -30.3V0.0H166.5V-55.800000000000004H183.60000000000002V-48.400000000000006Q186.20000000000002 -52.1 190.60000000000002 -54.25Q195.0 -56.400000000000006 200.5 -56.400000000000006Q210.3 -56.400000000000006 216.15 -50.050000000000004Q222.0 -43.7 222.0 -32.6Z M268.0 0.0 251.00000000000003 -23.400000000000002V0.0H233.9V-74.0H251.00000000000003V-33.1L267.90000000000003 -55.800000000000004H289.0L265.8 -27.8L289.20000000000005 0.0Z"/>
+  </g>
+</svg></div>
+  <div class="controls">
+    <div class="control-group">
+      <label>Mode</label>
+      <div class="theme-toggle">
+        <button id="btn-light" onclick="setTheme('light')">Light</button>
+        <button id="btn-dark" onclick="setTheme('dark')" class="active">Dark</button>
+      </div>
+    </div>
+    <div class="control-group">
+      <label>Accent</label>
+      <div class="swatch-row" id="swatches"></div>
+    </div>
+  </div>
+</div>
+
+<main>
+
+  <section>
+    <div class="hero">
+      <div class="mark"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  
+  <rect x="14" y="14" width="72" height="72" rx="18" fill="none" stroke="currentColor" stroke-width="7"/>
+  <path d="M 34,32 L 50,50 L 66,32 M 50,50 L 50,64 Q 50,71 43,71" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg></div>
+      <div class="hero-text">
+        <h1>Yoink</h1>
+        <p>Grab it and go. A download manager built for people who don't want to wait around — or dig through five tabs to find where a file landed.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>App icon</h2>
+    <div class="badge-grid" id="badge-grid"></div>
+  </section>
+
+  <section>
+    <h2>On different backgrounds</h2>
+    <div class="on-bg-row" id="on-bg-row"></div>
+  </section>
+
+  <section>
+    <h2>Wordmark &amp; type</h2>
+    <div class="type-sample">
+      <div class="wordmark"><svg viewBox="0 0 454 138" xmlns="http://www.w3.org/2000/svg">
+  
+  <svg x="10" y="10" width="118" height="118" viewBox="0 0 100 100">
+    
+  
+  <rect x="14" y="14" width="72" height="72" rx="18" fill="none" stroke="currentColor" stroke-width="7"/>
+  <path d="M 34,32 L 50,50 L 66,32 M 50,50 L 50,64 Q 50,71 43,71" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+
+  </svg>
+  <g transform="translate(154.0,104.0)" fill="currentColor">
+    <path d="M66.4 -70.2 42.1 -23.200000000000003V0.0H25.0V-23.200000000000003L0.7000000000000001 -70.2H20.1L33.7 -40.800000000000004L47.2 -70.2Z M69.9 -27.900000000000002Q69.9 -36.5 73.70000000000002 -43.05Q77.50000000000001 -49.6 84.10000000000002 -53.1Q90.70000000000002 -56.6 98.9 -56.6Q107.10000000000001 -56.6 113.70000000000002 -53.1Q120.30000000000001 -49.6 124.10000000000001 -43.05Q127.9 -36.5 127.9 -27.900000000000002Q127.9 -19.3 124.05000000000001 -12.75Q120.20000000000002 -6.2 113.55000000000001 -2.7Q106.9 0.8 98.70000000000002 0.8Q90.50000000000001 0.8 83.95000000000002 -2.7Q77.4 -6.2 73.65 -12.700000000000001Q69.9 -19.200000000000003 69.9 -27.900000000000002ZM110.50000000000001 -27.900000000000002Q110.50000000000001 -34.6 107.15 -38.2Q103.80000000000001 -41.800000000000004 98.9 -41.800000000000004Q93.9 -41.800000000000004 90.60000000000001 -38.25Q87.30000000000001 -34.7 87.30000000000001 -27.900000000000002Q87.30000000000001 -21.200000000000003 90.55000000000001 -17.6Q93.80000000000001 -14.0 98.70000000000002 -14.0Q103.60000000000001 -14.0 107.05000000000001 -17.6Q110.50000000000001 -21.200000000000003 110.50000000000001 -27.900000000000002Z M135.4 -70.8Q135.4 -74.8 138.25 -77.45Q141.10000000000002 -80.10000000000001 145.60000000000002 -80.10000000000001Q150.0 -80.10000000000001 152.85000000000002 -77.45Q155.70000000000002 -74.8 155.70000000000002 -70.8Q155.70000000000002 -66.9 152.85000000000002 -64.25Q150.0 -61.6 145.60000000000002 -61.6Q141.10000000000002 -61.6 138.25 -64.25Q135.4 -66.9 135.4 -70.8ZM154.10000000000002 -55.800000000000004V0.0H137.0V-55.800000000000004Z M222.0 -32.6V0.0H205.0V-30.3Q205.0 -35.9 202.10000000000002 -39.0Q199.20000000000002 -42.1 194.3 -42.1Q189.4 -42.1 186.5 -39.0Q183.60000000000002 -35.9 183.60000000000002 -30.3V0.0H166.5V-55.800000000000004H183.60000000000002V-48.400000000000006Q186.20000000000002 -52.1 190.60000000000002 -54.25Q195.0 -56.400000000000006 200.5 -56.400000000000006Q210.3 -56.400000000000006 216.15 -50.050000000000004Q222.0 -43.7 222.0 -32.6Z M268.0 0.0 251.00000000000003 -23.400000000000002V0.0H233.9V-74.0H251.00000000000003V-33.1L267.90000000000003 -55.800000000000004H289.0L265.8 -27.8L289.20000000000005 0.0Z"/>
+  </g>
+</svg></div>
+      <div class="type-row"><span class="label">Display</span><span style="font-family:'Poppins',sans-serif; font-weight:700; font-size:20px;">Poppins Bold — headings, wordmark, big numbers</span></div>
+      <div class="type-row"><span class="label">Body</span><span style="font-size:15px;">System UI sans — labels, lists, dialogs, everyday text</span></div>
+      <div class="type-row"><span class="label">Data</span><span style="font-family: ui-monospace, monospace; font-size:14px;">Monospace — file sizes, speeds, hashes, paths</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Accent presets</h2>
+    <div class="color-grid" id="color-grid"></div>
+  </section>
+
+  <section>
+    <h2>Applied to UI</h2>
+    <div class="ui-demo">
+      <div class="card">
+        <h3>Downloads</h3>
+        <p class="muted">Accent drives progress, active states, and file-type tints.</p>
+
+        <div class="download-item">
+          <div class="file-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg></div>
+          <div class="file-meta">
+            <div class="file-name">season-finale.mkv</div>
+            <div class="file-sub">340 MB of 1.2 GB · 24.6 MB/s</div>
+            <div class="progress-track"><div class="progress-fill" style="width:28%"></div></div>
+          </div>
+        </div>
+        <div class="download-item">
+          <div class="file-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg></div>
+          <div class="file-meta">
+            <div class="file-name">playlist-archive.zip</div>
+            <div class="file-sub">Queued · 214 items</div>
+            <div class="progress-track"><div class="progress-fill" style="width:4%"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Buttons &amp; actions</h3>
+        <p class="muted">Primary action, hover state, and a quiet secondary.</p>
+        <button class="btn">Grab download</button>
+        <button class="btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </section>
+
+  <footer>Yoink brand basics — mark, wordmark, and a configurable accent system for light &amp; dark mode.</footer>
+
+</main>
+
+<script>
+const accents = [
+  { id: 'blue', label: 'Yoink Blue', hex: '#2F6FED' },
+  { id: 'orange', label: 'Ubuntu Orange', hex: '#E95420' },
+  { id: 'purple', label: 'Grab Purple', hex: '#8B5CF6' },
+  { id: 'green', label: 'Snatch Green', hex: '#22A06B' },
+  { id: 'red', label: 'Heist Red', hex: '#E5484D' },
+];
+
+const markSvgTemplate = document.querySelector('.hero .mark svg').outerHTML;
+
+function setTheme(mode) {
+  document.documentElement.setAttribute('data-theme', mode);
+  document.getElementById('btn-light').classList.toggle('active', mode === 'light');
+  document.getElementById('btn-dark').classList.toggle('active', mode === 'dark');
+}
+
+function setAccent(id) {
+  document.documentElement.setAttribute('data-accent', id);
+  document.querySelectorAll('.swatch').forEach(s => s.classList.toggle('active', s.dataset.accent === id));
+}
+
+const swatchRow = document.getElementById('swatches');
+accents.forEach(a => {
+  const b = document.createElement('button');
+  b.className = 'swatch' + (a.id === 'blue' ? ' active' : '');
+  b.style.background = a.hex;
+  b.title = a.label;
+  b.dataset.accent = a.id;
+  b.onclick = () => setAccent(a.id);
+  swatchRow.appendChild(b);
+});
+
+const badgeGrid = document.getElementById('badge-grid');
+accents.forEach(a => {
+  const div = document.createElement('div');
+  div.className = 'badge';
+  div.style.background = a.hex;
+  div.innerHTML = markSvgTemplate;
+  div.style.color = '#FAFBFC';
+  badgeGrid.appendChild(div);
+});
+
+// "On different backgrounds" row: white mark on each accent, plus neutral surfaces
+const onBgRow = document.getElementById('on-bg-row');
+const bgSamples = [
+  { bg: '#2F6FED', color: '#FAFBFC', label: 'Yoink Blue' },
+  { bg: '#E95420', color: '#FAFBFC', label: 'Ubuntu Orange' },
+  { bg: '#8B5CF6', color: '#FAFBFC', label: 'Grab Purple' },
+  { bg: '#22A06B', color: '#FAFBFC', label: 'Snatch Green' },
+  { bg: '#E5484D', color: '#FAFBFC', label: 'Heist Red' },
+  { bg: '#0F1115', color: '#2F6FED', label: 'Dark surface' },
+  { bg: '#F7F8FA', color: '#2F6FED', label: 'Light surface' },
+];
+bgSamples.forEach(s => {
+  const cell = document.createElement('div');
+  cell.className = 'on-bg-cell';
+  cell.style.background = s.bg;
+  cell.innerHTML = `<div class="mark-inner" style="color:${s.color}">${markSvgTemplate}</div><span class="cell-label" style="color:${s.color}">${s.label}</span>`;
+  onBgRow.appendChild(cell);
+});
+
+const colorGrid = document.getElementById('color-grid');
+accents.forEach(a => {
+  const div = document.createElement('div');
+  div.className = 'color-card';
+  div.innerHTML = `<div class="swatch-block" style="background:${a.hex}"></div><div class="info"><div class="name">${a.label}</div><div class="hex">${a.hex}</div></div>`;
+  colorGrid.appendChild(div);
+});
+</script>
+
+</body>
+</html>
