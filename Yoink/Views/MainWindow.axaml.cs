@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Yoink.Models;
@@ -20,6 +21,10 @@ public partial class MainWindow : Window
     private readonly DownloadQueueService _queue;
     private readonly ObservableCollection<DownloadQueueItem> _items = new();
 
+    // Created once the window is attached to a screen (see MainWindow_Opened) — the clipboard
+    // isn't guaranteed to be available any earlier than that.
+    private ClipboardWatcherService? _clipboardWatcher;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -27,13 +32,61 @@ public partial class MainWindow : Window
         _queue = new DownloadQueueService(_ytDlp);
         _queue.ItemChanged += OnQueueItemChanged;
 
-        CboTheme.SelectedIndex = (int)SettingsService.Load().Theme;
+        var settings = SettingsService.Load();
+        CboTheme.SelectedIndex = (int)settings.Theme;
+        ChkClipboardWatch.IsChecked = settings.ClipboardWatchEnabled;
 
         LstQueue.ItemsSource = _items;
         UpdateEmptyQueueVisibility();
 
+        Opened += MainWindow_Opened;
+
         _ = LoadQueueAsync();
         _ = WarnIfYtDlpMissingAsync();
+    }
+
+    private void MainWindow_Opened(object? sender, EventArgs e)
+    {
+        _clipboardWatcher = new ClipboardWatcherService(ReadClipboardTextAsync)
+        {
+            Enabled = SettingsService.Load().ClipboardWatchEnabled
+        };
+        _clipboardWatcher.UrlDetected += OnClipboardUrlDetected;
+    }
+
+    /// <summary>
+    /// Avalonia 12's clipboard is data-transfer-shaped rather than a plain get/set-text API:
+    /// <c>TryGetDataAsync</c> hands back an <see cref="IAsyncDataTransfer"/> snapshot, from which
+    /// <c>TryGetTextAsync</c> (an extension method) pulls the text, if any.
+    /// </summary>
+    private async Task<string?> ReadClipboardTextAsync()
+    {
+        if (Clipboard is not { } clipboard)
+            return null;
+
+        var data = await clipboard.TryGetDataAsync();
+        return data is null ? null : await data.TryGetTextAsync();
+    }
+
+    /// <summary>
+    /// Called from a background thread by <see cref="ClipboardWatcherService"/> — hands off to the
+    /// same add-download dialog the "+ Add download" button uses, pre-filled and awaiting
+    /// confirmation, rather than queuing anything on its own.
+    /// </summary>
+    private void OnClipboardUrlDetected(string url)
+    {
+        Dispatcher.UIThread.Post(() => _ = AddDownloadDialog.ShowAsync(this, _queue, url));
+    }
+
+    private void ChkClipboardWatch_IsCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        var enabled = ChkClipboardWatch.IsChecked == true;
+        if (_clipboardWatcher is not null)
+            _clipboardWatcher.Enabled = enabled;
+
+        var settings = SettingsService.Load();
+        settings.ClipboardWatchEnabled = enabled;
+        SettingsService.Save(settings);
     }
 
     private async Task LoadQueueAsync()
@@ -144,6 +197,13 @@ public partial class MainWindow : Window
     {
         _queue.ItemChanged -= OnQueueItemChanged;
         _queue.Dispose();
+
+        if (_clipboardWatcher is not null)
+        {
+            _clipboardWatcher.UrlDetected -= OnClipboardUrlDetected;
+            _clipboardWatcher.Dispose();
+        }
+
         base.OnClosed(e);
     }
 

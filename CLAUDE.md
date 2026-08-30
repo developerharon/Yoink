@@ -59,9 +59,17 @@ project root — that's exactly the flat structure this reorg moved away from.
   - The "details/settings panel" half of step 4 is still minimal — just the existing Theme picker in the
     header. A real settings screen is more roadmap step 7's territory (speed limits, concurrency, scheduling
     all need one); revisit then rather than inventing settings early to fill the panel out.
+  - The header's "Watch clipboard" `CheckBox` (`ChkClipboardWatch`) is the clipboard-monitoring half of
+    roadmap step 5. `MainWindow_Opened` (not the constructor — the clipboard isn't guaranteed available
+    before the window is attached to a screen) creates a `ClipboardWatcherService`, wired to
+    `Window.Clipboard` via `ReadClipboardTextAsync`. When it raises `UrlDetected`, `OnClipboardUrlDetected`
+    opens `AddDownloadDialog` pre-filled with the detected URL rather than queuing anything directly — see
+    `ClipboardWatcherService`'s doc comment for why. The checkbox's state round-trips through
+    `AppSettings.ClipboardWatchEnabled`.
 - `AddDownloadDialog.axaml` / `.axaml.cs` — the "add download" dialog half of step 4: URL + resolution
   picker, calls `DownloadQueueService.EnqueueAsync` directly and closes. Shown via the static
-  `AddDownloadDialog.ShowAsync(owner, queue)`, same pattern as `MessageBoxWindow.ShowAsync`.
+  `AddDownloadDialog.ShowAsync(owner, queue, prefillUrl)`, same pattern as `MessageBoxWindow.ShowAsync`.
+  `prefillUrl` is optional — the clipboard watcher (above) is the only caller that passes one.
 - `MessageBoxWindow.axaml` / `.axaml.cs` — a minimal modal dialog (title + message + OK button) used in
   place of WinForms' `MessageBox`, which Avalonia doesn't provide out of the box. Use
   `MessageBoxWindow.ShowAsync(owner, message, title)` for anything that genuinely needs a blocking
@@ -105,11 +113,22 @@ project root — that's exactly the flat structure this reorg moved away from.
   currently downloading) re-reads the full row after updating it rather than raising a bare `Id`+`Status`
   object — every `ItemChanged` subscriber, `Views.MainWindow` included, relies on each payload being a
   complete snapshot it can drop straight into place.
+- `ClipboardWatcherService.cs` — the clipboard-monitoring half of the "auto-catch mechanism" from README
+  roadmap step 5 (the browser-extension half is not built — see the README roadmap note on why clipboard
+  watching came first). Polls the clipboard on a timer (Avalonia's clipboard API has no change event, and
+  there's no OS-agnostic native one either) via a caller-supplied `Func<Task<string?>>`, and raises
+  `UrlDetected` when the text changes to something matching a conservative YouTube-URL regex. It never
+  downloads anything itself — see `Views.MainWindow.OnClipboardUrlDetected` above for why detection and
+  action are kept separate. Known limitation, called out in its doc comment: Wayland compositors can
+  restrict clipboard reads when the app isn't focused, so detection may be less reliable there than on X11
+  or Windows while the app is in the background.
 
 ### Models (`Yoink/Models/`)
 
 - `AppSettings.cs` — `AppSettings` + `ThemePreference`. Theme mapping itself
   (`ThemePreference` → Avalonia's `ThemeVariant`) stays in `App.ToThemeVariant` (see below), not here.
+  Also carries `ClipboardWatchEnabled` (default `true`), read/written by `Views.MainWindow`'s
+  "Watch clipboard" checkbox.
 - `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus`. Plain data, no
   `INotifyPropertyChanged` — see the `Views.MainWindow`/`DownloadQueueService` notes above for how the
   queue view stays live without it. Carries presentational computed properties

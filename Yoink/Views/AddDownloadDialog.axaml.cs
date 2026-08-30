@@ -21,9 +21,21 @@ public partial class AddDownloadDialog : Window
         InitializeComponent();
     }
 
-    public static Task ShowAsync(Window owner, DownloadQueueService queue)
+    /// <summary>
+    /// Shows the dialog. <paramref name="prefillUrl"/> is used by the clipboard watcher (README
+    /// roadmap step 5) to hand over a detected URL for the user to confirm — leave it null for the
+    /// ordinary "+ Add download" button, which starts from a blank form.
+    /// </summary>
+    public static Task ShowAsync(Window owner, DownloadQueueService queue, string? prefillUrl = null)
     {
         var dialog = new AddDownloadDialog { _queue = queue };
+
+        if (!string.IsNullOrEmpty(prefillUrl))
+        {
+            dialog.Title = "Download detected";
+            dialog.TxtUrl.Text = prefillUrl;
+        }
+
         return dialog.ShowDialog(owner);
     }
 
