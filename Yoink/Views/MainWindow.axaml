@@ -36,21 +36,38 @@
             </StackPanel>
         </ui:FANavigationView.PaneCustomContent>
 
-        <Grid Margin="24">
+        <Grid Margin="32,28">
 
-            <!-- Downloads (default) -->
-            <Border Name="DownloadsBody" Classes="Card">
-                <DockPanel>
-                    <StackPanel DockPanel.Dock="Top" Spacing="2" Margin="0,0,0,10">
-                        <Grid ColumnDefinitions="*,Auto">
-                            <TextBlock Grid.Column="0" Text="Downloads" Classes="SectionTitle" VerticalAlignment="Center" />
-                            <Button Grid.Column="1" Content="+ Add download" Classes="Primary" Click="BtnAddDownload_Click" />
-                        </Grid>
-                        <TextBlock Text="Grab a video, keep watching." Classes="Subtitle" />
+            <!-- Downloads (default). Used to be wrapped in a Border.Card (rounded, bordered box)
+                 sitting inside the window's own rounded frame — a "box inside a box" look that read
+                 as visual clutter rather than structure. Dropped in favor of the page sitting
+                 directly on the window's own background, with a hairline rule under the header
+                 standing in for the separation the card border used to provide. -->
+            <DockPanel Name="DownloadsBody">
+                <Border DockPanel.Dock="Top" BorderBrush="{DynamicResource BorderBrush2}" BorderThickness="0,0,0,1"
+                        Padding="0,0,0,16" Margin="0,0,0,16">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Spacing="4">
+                            <TextBlock Text="Downloads" Classes="AppTitle" />
+                            <TextBlock Text="Grab a video, keep watching." Classes="Subtitle" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="+ Add download" Classes="Primary"
+                                VerticalAlignment="Center" Click="BtnAddDownload_Click" />
+                    </Grid>
+                </Border>
+
+                <Grid>
+                    <!-- Empty state: centered in the remaining space rather than a single caption
+                         line pinned to the top, now that there's room to give it presence. -->
+                    <StackPanel Name="TxtEmptyQueue" IsVisible="False" MaxWidth="320" Spacing="10"
+                                HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Path Classes="YoinkMark" Width="44" Height="44" StrokeThickness="2.5" Opacity="0.45"
+                              Stroke="{DynamicResource TextMutedBrush}" HorizontalAlignment="Center" />
+                        <TextBlock Text="Nothing queued yet" Classes="SectionTitle" Margin="0"
+                                   HorizontalAlignment="Center" />
+                        <TextBlock Text="Click &quot;Add download&quot; above to grab your first video."
+                                   Classes="Caption" TextWrapping="Wrap" TextAlignment="Center" />
                     </StackPanel>
-                    <TextBlock Name="TxtEmptyQueue" DockPanel.Dock="Top" Classes="Caption" TextWrapping="Wrap"
-                               Text="Nothing queued yet — click &quot;Add download&quot; to grab your first video."
-                               Margin="0,4,0,0" IsVisible="False" />
 
                     <ScrollViewer>
                         <ItemsControl Name="LstQueue">
@@ -89,8 +106,8 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </ScrollViewer>
-                </DockPanel>
-            </Border>
+                </Grid>
+            </DockPanel>
 
             <!-- Settings — hidden by default, shown via the nav bar's built-in Settings entry -->
             <views:SettingsView Name="SettingsBody" IsVisible="False" />
