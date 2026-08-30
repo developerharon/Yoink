@@ -2,10 +2,19 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Yoink.MainWindow"
         Title="Yoink"
-        Width="560" Height="220"
+        Width="560" Height="256"
         CanResize="false">
 
     <StackPanel Margin="16" Spacing="12">
+
+        <DockPanel>
+            <TextBlock Text="Theme:" Width="60" VerticalAlignment="Center" />
+            <ComboBox Name="CboTheme" Width="100" SelectionChanged="CboTheme_SelectionChanged">
+                <ComboBoxItem>System</ComboBoxItem>
+                <ComboBoxItem>Light</ComboBoxItem>
+                <ComboBoxItem>Dark</ComboBoxItem>
+            </ComboBox>
+        </DockPanel>
 
         <DockPanel>
             <TextBlock Text="URL:" Width="60" VerticalAlignment="Center" />

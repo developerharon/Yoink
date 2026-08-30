@@ -2,7 +2,9 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using YoutubeExplode;
@@ -17,6 +19,21 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        CboTheme.SelectedIndex = (int)SettingsService.Load().Theme;
+    }
+
+    private void CboTheme_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (CboTheme.SelectedIndex < 0)
+            return;
+
+        var preference = (ThemePreference)CboTheme.SelectedIndex;
+        Application.Current!.RequestedThemeVariant = App.ToThemeVariant(preference);
+
+        var settings = SettingsService.Load();
+        settings.Theme = preference;
+        SettingsService.Save(settings);
     }
 
     private async void BtnDownload_Click(object? sender, RoutedEventArgs e)
