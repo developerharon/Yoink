@@ -1,8 +1,9 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using Yoink.Models;
 
-namespace Yoink;
+namespace Yoink.Services;
 
 /// <summary>
 /// Loads and saves <see cref="AppSettings"/> as JSON in the user's per-user config directory

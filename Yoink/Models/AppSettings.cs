@@ -1,4 +1,4 @@
-namespace Yoink;
+namespace Yoink.Models;
 
 /// <summary>
 /// User-configurable preferences for the app. Persisted to disk via <see cref="SettingsService"/>.

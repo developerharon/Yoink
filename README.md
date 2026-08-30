@@ -47,9 +47,15 @@ more load-bearing than later ones. Checked-off steps are implemented and in use,
   flow — goes through this persisted, resumable, retryable queue; a killed/crashed app recovers cleanly on
   restart. The part still missing is the *view*: there's no list UI yet to see multiple queued items or
   reach pause/resume/reorder by hand. That's step 4, next.
-- [ ] **4. Main UI — queue view & add dialog** — the main Avalonia window: an add-download dialog (URL +
+- [x] **4. Main UI — queue view & add dialog** — the main Avalonia window: an add-download dialog (URL +
   quality/format picker for YT links), a list view with per-item progress bars, and a details/settings
   panel. Bound to the queue from the previous step.
+  <br>Built as `AddDownloadDialog` (URL + resolution) and a queue list in `MainWindow` bound directly to
+  `DownloadQueueService` — every row gets a live progress bar and Pause/Resume/Cancel/Retry/"Show in
+  folder" depending on its state. The old separate "Recent downloads" list is gone; the queue itself (never
+  pruned) now serves as history too. The "settings panel" part is still just the existing Theme picker —
+  a fuller settings screen makes more sense once step 7 (speed limits/concurrency/scheduling) gives it
+  something to actually hold.
 - [ ] **5. Auto-catch mechanism** — the "automatically catch my downloads" piece, which is really two separate
   mechanisms: (1) a browser extension (Chrome/Firefox) that detects downloadable links/media and hands the
   URL off to the app via a local HTTP endpoint or native messaging, and (2) clipboard monitoring, where the

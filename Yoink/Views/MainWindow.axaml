@@ -1,0 +1,82 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:models="using:Yoink.Models"
+        xmlns:converters="using:Yoink.Converters"
+        x:Class="Yoink.Views.MainWindow"
+        Title="Yoink"
+        Width="720" Height="640"
+        MinWidth="640" MinHeight="520"
+        WindowStartupLocation="CenterScreen">
+
+    <Grid Margin="24" RowDefinitions="Auto,*">
+
+        <!-- Header -->
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,20">
+            <StackPanel Grid.Column="0" Spacing="2">
+                <TextBlock Text="Yoink" Classes="AppTitle" />
+                <TextBlock Text="Grab a video, keep watching." Classes="Subtitle" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <TextBlock Text="Theme" Classes="Caption" VerticalAlignment="Center" />
+                <ComboBox Name="CboTheme" Width="100" SelectionChanged="CboTheme_SelectionChanged">
+                    <ComboBoxItem>System</ComboBoxItem>
+                    <ComboBoxItem>Light</ComboBoxItem>
+                    <ComboBoxItem>Dark</ComboBoxItem>
+                </ComboBox>
+            </StackPanel>
+        </Grid>
+
+        <!-- Download queue -->
+        <Border Grid.Row="1" Classes="Card">
+            <DockPanel>
+                <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,0,0,10">
+                    <TextBlock Grid.Column="0" Text="Downloads" Classes="SectionTitle" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Content="+ Add download" Classes="Primary" Click="BtnAddDownload_Click" />
+                </Grid>
+                <TextBlock Name="TxtEmptyQueue" DockPanel.Dock="Top" Classes="Caption" TextWrapping="Wrap"
+                           Text="Nothing queued yet — click &quot;Add download&quot; to grab your first video."
+                           Margin="0,4,0,0" IsVisible="False" />
+
+                <ScrollViewer>
+                    <ItemsControl Name="LstQueue">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="models:DownloadQueueItem">
+                                <Border BorderBrush="{DynamicResource BorderBrush2}" BorderThickness="0,0,0,1" Padding="0,10">
+                                    <StackPanel Spacing="6">
+                                        <Grid ColumnDefinitions="*,Auto">
+                                            <StackPanel Grid.Column="0" Spacing="2" Margin="0,0,12,0">
+                                                <TextBlock Text="{Binding DisplayTitle}" FontWeight="Medium"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Subtitle}" Classes="Caption" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                                                        VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding StatusText}" FontWeight="SemiBold" FontSize="12"
+                                                           VerticalAlignment="Center"
+                                                           Foreground="{Binding Status, Converter={x:Static converters:DownloadQueueStatusToBrushConverter.Instance}}" />
+                                                <Button Content="Pause" FontSize="12" IsVisible="{Binding CanPause}"
+                                                        Click="BtnPause_Click" />
+                                                <Button Content="Resume" FontSize="12" IsVisible="{Binding CanResume}"
+                                                        Click="BtnResume_Click" />
+                                                <Button Content="Cancel" FontSize="12" IsVisible="{Binding CanCancel}"
+                                                        Click="BtnCancel_Click" />
+                                                <Button Content="Retry" FontSize="12" IsVisible="{Binding CanRetry}"
+                                                        Click="BtnRetry_Click" />
+                                                <Button Content="Show in folder" FontSize="12" IsVisible="{Binding CanShowInFolder}"
+                                                        Click="BtnShowInFolder_Click" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <ProgressBar Minimum="0" Maximum="100" Value="{Binding ProgressPercent, Mode=OneWay}"
+                                                     IsVisible="{Binding ShowProgress}" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
+    </Grid>
+
+</Window>

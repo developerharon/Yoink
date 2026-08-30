@@ -6,23 +6,22 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
+using Yoink.Models;
 
-namespace Yoink;
+namespace Yoink.Services;
 
 /// <summary>
 /// The download queue & persistence layer (README roadmap step 3): a persisted queue of
-/// pending/active/paused/completed/failed downloads, stored in SQLite alongside settings.json and
-/// history.json in the user's per-user config directory, with pause/resume/cancel/retry/reorder
+/// pending/active/paused/completed/failed downloads, stored in SQLite (queue.db) alongside
+/// settings.json in the user's per-user config directory, with pause/resume/cancel/retry/reorder
 /// support. A single background loop processes one item at a time (concurrency limits are a later
 /// roadmap step) via <see cref="YtDlpClient"/> for resolution/download and reports progress
 /// through <see cref="ItemChanged"/>.
 ///
-/// The full queue *view* — a list UI a person can pause/resume/reorder items from — is the next
-/// roadmap step (step 4) and doesn't exist yet. Today <see cref="MainWindow"/> talks to this queue
-/// through <see cref="EnqueueAndWaitAsync"/>, which enqueues a single item and awaits its outcome,
-/// so the current one-download-at-a-time UI is really just always looking at a one-item queue —
-/// but every download already goes through the same persisted, resumable, retryable path a future
-/// queue view would manage directly.
+/// This queue doubles as download history — it's never pruned, so completed/failed items stay
+/// visible in <c>Views.MainWindow</c>'s queue view (roadmap step 4) rather than living in a
+/// separate history store. There's no migration from the old history.json; that file is simply
+/// unused now.
 /// </summary>
 public sealed class DownloadQueueService : IDisposable
 {
@@ -321,19 +320,38 @@ public sealed class DownloadQueueService : IDisposable
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = clearError
-            ? "UPDATE download_queue SET Status = $status, ErrorMessage = NULL WHERE Id = $id"
-            : "UPDATE download_queue SET Status = $status WHERE Id = $id";
-        command.Parameters.AddWithValue("$status", status.ToString());
-        command.Parameters.AddWithValue("$id", id);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        var item = new DownloadQueueItem { Id = id, Status = status };
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = clearError
+                ? "UPDATE download_queue SET Status = $status, ErrorMessage = NULL WHERE Id = $id"
+                : "UPDATE download_queue SET Status = $status WHERE Id = $id";
+            command.Parameters.AddWithValue("$status", status.ToString());
+            command.Parameters.AddWithValue("$id", id);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Re-read the full row rather than constructing a bare Id+Status item: callers (the queue
+        // view included) treat every ItemChanged payload as a complete, authoritative snapshot, so
+        // a partial one would blank out Title/Progress/etc. wherever it's applied.
+        var item = await GetItemAsync(id, connection, cancellationToken).ConfigureAwait(false);
+        if (item is null)
+            return;
+
         RaiseChanged(item);
 
         if (completeWaiter)
             CompleteWaiter(item);
+    }
+
+    private static async Task<DownloadQueueItem?> GetItemAsync(long id, SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM download_queue WHERE Id = $id";
+        command.Parameters.AddWithValue("$id", id);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadItem(reader) : null;
     }
 
     private async Task PersistAsync(DownloadQueueItem item, CancellationToken cancellationToken = default)
