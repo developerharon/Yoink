@@ -48,7 +48,7 @@ jobs:
       - name: Pack (produces the self-updating AppImage)
         run: >
           vpk pack -u Yoink -v ${{ steps.version.outputs.version }} -p publish -e Yoink
-          --packTitle Yoink --icon Yoink/Assets/tray-icon.png -r linux-x64
+          --packTitle Yoink --icon Yoink/Assets/app-icons/app-icon-blue.png -r linux-x64
 
       - name: Upload to GitHub Releases
         run: >
@@ -58,7 +58,7 @@ jobs:
   release-windows:
     # TODO: enable once a packaged build has been verified on real Windows hardware, and a proper
     # .ico (Velopack's Windows packaging may specifically want one, unlike the PNG used below,
-    # which was only verified against Linux packaging) has been prepared from Assets/tray-icon.png.
+    # which was only verified against Linux packaging) has been prepared from Assets/app-icons/app-icon-blue.png.
     if: false
     runs-on: windows-latest
     steps:
@@ -88,7 +88,7 @@ jobs:
       - name: Pack (produces Setup.exe)
         run: >
           vpk pack -u Yoink -v ${{ steps.version.outputs.version }} -p publish -e Yoink.exe
-          --packTitle Yoink --icon Yoink/Assets/tray-icon.png -r win-x64
+          --packTitle Yoink --icon Yoink/Assets/app-icons/app-icon-blue.png -r win-x64
 
       - name: Upload to GitHub Releases
         run: >
@@ -99,7 +99,7 @@ jobs:
     # TODO: enable once a packaged build has been verified on real macOS hardware, notarization is
     # sorted (or explicitly deferred with Gatekeeper warnings accepted — see the
     # update-distribution-strategy memory: unsigned is the agreed starting point), and a proper
-    # .icns has been prepared from Assets/tray-icon.png.
+    # .icns has been prepared from Assets/app-icons/app-icon-blue.png.
     if: false
     runs-on: macos-latest
     steps:
@@ -128,7 +128,7 @@ jobs:
       - name: Pack (produces a .app bundle)
         run: >
           vpk pack -u Yoink -v ${{ steps.version.outputs.version }} -p publish
-          --packTitle Yoink --icon Yoink/Assets/tray-icon.png -r osx-x64
+          --packTitle Yoink --icon Yoink/Assets/app-icons/app-icon-blue.png -r osx-x64
 
       - name: Upload to GitHub Releases
         run: >

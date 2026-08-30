@@ -1,5 +1,6 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:styling="using:FluentAvalonia.Styling"
              x:Class="Yoink.App"
              RequestedThemeVariant="Default">
 
@@ -11,18 +12,37 @@
         <ResourceDictionary>
 
             <!-- Accent, mapped onto FluentTheme's own accent keys so every built-in control
-                 (checkboxes, sliders, focus rings, ...) picks it up automatically. -->
-            <Color x:Key="SystemAccentColor">#6C5DD3</Color>
-            <Color x:Key="SystemAccentColorLight1">#8879E0</Color>
-            <Color x:Key="SystemAccentColorLight2">#A79CE8</Color>
-            <Color x:Key="SystemAccentColorLight3">#C6BEF0</Color>
-            <Color x:Key="SystemAccentColorDark1">#5347B0</Color>
-            <Color x:Key="SystemAccentColorDark2">#423890</Color>
-            <Color x:Key="SystemAccentColorDark3">#312A70</Color>
+                 (checkboxes, sliders, focus rings, ...) picks it up automatically. These are just
+                 the Yoink Blue default — App.ApplyAccent overwrites every key here (and the accent
+                 brushes below) at startup and whenever the user picks a different preset in
+                 Views.SettingsView, so treat the literal values here as a design-time fallback
+                 only, not the source of truth (that's BRANDING.md). -->
+            <Color x:Key="SystemAccentColor">#2F6FED</Color>
+            <Color x:Key="SystemAccentColorLight1">#5C8FF1</Color>
+            <Color x:Key="SystemAccentColorLight2">#89AFF5</Color>
+            <Color x:Key="SystemAccentColorLight3">#B5CFF9</Color>
+            <Color x:Key="SystemAccentColorDark1">#275DC7</Color>
+            <Color x:Key="SystemAccentColorDark2">#1F4AA0</Color>
+            <Color x:Key="SystemAccentColorDark3">#193B80</Color>
 
             <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource SystemAccentColor}" />
             <SolidColorBrush x:Key="AccentLightBrush" Color="{StaticResource SystemAccentColorLight1}" />
             <SolidColorBrush x:Key="AccentDarkBrush" Color="{StaticResource SystemAccentColorDark1}" />
+            <SolidColorBrush x:Key="AccentSoftBrush" Color="#E4ECFD" />
+            <SolidColorBrush x:Key="OnAccentBrush" Color="#FFFFFF" />
+
+            <!-- The mark from BRANDING.md — an outlined rounded square with a "Y" inside, one
+                 stroke color throughout. Reused wherever the app's own title needs the mark next to
+                 it (see Views.MainWindow's header) via the Path.YoinkMark style below, rather than a
+                 raster image, so it stays crisp at any size and recolors live with the accent
+                 exactly like everything else here. Coordinates match yoink-mark-mono.svg's 100x100
+                 viewBox (rounded rect rx=18 re-expressed as an arc-based path, since Avalonia's Path
+                 Data doesn't have a rounded-rect shorthand) — keep the two in sync if the mark ever
+                 changes shape. -->
+            <StreamGeometry x:Key="YoinkMarkGeometry">
+                M32,14 H68 A18,18 0 0 1 86,32 V68 A18,18 0 0 1 68,86 H32 A18,18 0 0 1 14,68 V32 A18,18 0 0 1 32,14 Z
+                M34,32 L50,50 L66,32 M50,50 L50,64 Q50,71 43,71
+            </StreamGeometry>
 
             <!-- Semantic colors for download outcomes — never reused for actions/accents. -->
             <Color x:Key="SuccessColor">#22B573</Color>
@@ -34,16 +54,16 @@
 
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Light">
-                    <Color x:Key="AppBackgroundColor">#F6F6FB</Color>
+                    <Color x:Key="AppBackgroundColor">#F7F8FA</Color>
                     <Color x:Key="CardBackgroundColor">#FFFFFF</Color>
-                    <Color x:Key="BorderColor2">#E7E7F0</Color>
-                    <Color x:Key="TextMutedColor">#6B6B7B</Color>
+                    <Color x:Key="BorderColor2">#DCE0E5</Color>
+                    <Color x:Key="TextMutedColor">#6B7280</Color>
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Dark">
-                    <Color x:Key="AppBackgroundColor">#121218</Color>
-                    <Color x:Key="CardBackgroundColor">#1B1B23</Color>
-                    <Color x:Key="BorderColor2">#2A2A34</Color>
-                    <Color x:Key="TextMutedColor">#9A9AA8</Color>
+                    <Color x:Key="AppBackgroundColor">#0F1115</Color>
+                    <Color x:Key="CardBackgroundColor">#171A21</Color>
+                    <Color x:Key="BorderColor2">#2E3340</Color>
+                    <Color x:Key="TextMutedColor">#9AA1AC</Color>
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 
@@ -56,7 +76,12 @@
     </Application.Resources>
 
     <Application.Styles>
-        <FluentTheme />
+        <!-- FluentAvaloniaUI's own theme, not vanilla Avalonia.Themes.Fluent's <FluentTheme/> — it's
+             a superset that re-styles the same base controls (Button, ComboBox, ...) plus the extra
+             WinUI-style controls the navigation shell uses (FANavigationView, FASettingsExpander).
+             Reads/writes the same SystemAccentColor-family resource keys App.ApplyAccent already
+             targets, so that method needed no changes when this replaced FluentTheme. -->
+        <styling:FluentAvaloniaTheme />
 
         <Style Selector="Window">
             <Setter Property="Background" Value="{DynamicResource AppBackgroundBrush}" />
@@ -99,7 +124,7 @@
 
         <Style Selector="Button.Primary">
             <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
-            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Foreground" Value="{DynamicResource OnAccentBrush}" />
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="20,9" />
             <Setter Property="FontWeight" Value="SemiBold" />
@@ -108,7 +133,35 @@
         <Style Selector="ProgressBar">
             <Setter Property="CornerRadius" Value="5" />
             <Setter Property="Height" Value="10" />
+            <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
             <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        </Style>
+
+        <!-- The reusable mark next to "Yoink" in Views.MainWindow's header — see YoinkMarkGeometry
+             above. Stroke is left unset here (each usage picks AccentBrush, OnAccentBrush, etc.
+             depending on what it's sitting on) — only the shape/behavior is shared. -->
+        <Style Selector="Path.YoinkMark">
+            <Setter Property="Data" Value="{StaticResource YoinkMarkGeometry}" />
+            <Setter Property="Stretch" Value="Uniform" />
+            <Setter Property="Fill" Value="Transparent" />
+            <Setter Property="StrokeLineCap" Value="Round" />
+            <Setter Property="StrokeJoin" Value="Round" />
+        </Style>
+
+        <!-- The accent-preset swatches in Views.SettingsView. Each swatch's own Background is set
+             per-instance in XAML to that preset's fixed color (unlike everything above, it must NOT
+             react to the currently-applied accent) — this style only adds the round shape and the
+             selection ring, toggled via the "Selected" class in SettingsView's code-behind. -->
+        <Style Selector="Button.AccentSwatch">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="CornerRadius" Value="15" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="BorderThickness" Value="2" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
+        <Style Selector="Button.AccentSwatch.Selected">
+            <Setter Property="BorderBrush" Value="{DynamicResource TextMutedBrush}" />
         </Style>
 
     </Application.Styles>

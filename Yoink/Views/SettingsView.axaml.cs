@@ -9,23 +9,28 @@ namespace Yoink.Views;
 
 /// <summary>
 /// The settings screen from README roadmap step 7 ("a settings screen to control all of it") —
-/// consolidates every persisted preference in one place, including the theme/clipboard/tray
-/// toggles that used to live directly in <see cref="MainWindow"/>'s header. Every control persists
-/// its own change immediately on the spot (read-modify-write via <see cref="SettingsService"/>,
-/// same as the header toggles did before) rather than waiting for a "Save" button — there isn't
-/// one, just "Close". Nothing here needs to push a live update anywhere: <see cref="MainWindow"/>'s
-/// <c>ClipboardWatcherService</c> and <c>DownloadQueueService</c> both re-read settings fresh at the
-/// point they need them, so a change here takes effect on their very next check.
+/// consolidates every persisted preference in one place. Hosted as a page inside
+/// <see cref="MainWindow"/>'s <c>FANavigationView</c> shell rather than a separate modal
+/// <c>Window</c> (that's what this class used to be, back when it was <c>SettingsWindow</c>) — see
+/// <see cref="MainWindow"/>'s doc comments for how navigating to/from it works. Every control
+/// persists its own change immediately on the spot (read-modify-write via
+/// <see cref="SettingsService"/>, same as before) rather than waiting for a "Save" button — there
+/// isn't one; the back arrow in the nav bar is the only way out, and it doesn't need to trigger
+/// anything since every change already committed on the spot. Nothing here needs to push a live
+/// update anywhere: <see cref="MainWindow"/>'s <c>ClipboardWatcherService</c> and
+/// <c>DownloadQueueService</c> both re-read settings fresh at the point they need them, so a change
+/// here takes effect on their very next check.
 /// </summary>
-public partial class SettingsWindow : Window
+public partial class SettingsView : UserControl
 {
-    public SettingsWindow()
+    public SettingsView()
     {
         InitializeComponent();
 
         var settings = SettingsService.Load();
 
         CboTheme.SelectedIndex = (int)settings.Theme;
+        SetSelectedAccentSwatch(settings.AccentColor);
         ChkClipboardWatch.IsChecked = settings.ClipboardWatchEnabled;
         ChkMinimizeToTray.IsChecked = settings.MinimizeToTrayOnClose;
 
@@ -47,6 +52,24 @@ public partial class SettingsWindow : Window
         var preference = (ThemePreference)CboTheme.SelectedIndex;
         Application.Current!.RequestedThemeVariant = App.ToThemeVariant(preference);
         UpdateSettings(s => s.Theme = preference);
+    }
+
+    private void BtnAccentSwatch_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string tag } || !Enum.TryParse<AccentColor>(tag, out var accent))
+            return;
+
+        App.ApplyAccent(accent);
+        SetSelectedAccentSwatch(accent);
+        UpdateSettings(s => s.AccentColor = accent);
+    }
+
+    /// <summary>Toggles the "Selected" style class (the ring in App.axaml's Button.AccentSwatch.Selected)
+    /// onto whichever swatch matches <paramref name="accent"/> and off every other one.</summary>
+    private void SetSelectedAccentSwatch(AccentColor accent)
+    {
+        foreach (var button in new[] { BtnAccentBlue, BtnAccentOrange, BtnAccentPurple, BtnAccentGreen, BtnAccentRed })
+            button.Classes.Set("Selected", (string)button.Tag! == accent.ToString());
     }
 
     private void ChkClipboardWatch_IsCheckedChanged(object? sender, RoutedEventArgs e) =>
@@ -76,8 +99,6 @@ public partial class SettingsWindow : Window
 
     private void TpScheduleEnd_SelectedTimeChanged(object? sender, TimePickerSelectedValueChangedEventArgs e) =>
         UpdateSettings(s => s.ScheduleEnd = TimeOnly.FromTimeSpan(TpScheduleEnd.SelectedTime ?? TimeSpan.Zero));
-
-    private void BtnClose_Click(object? sender, RoutedEventArgs e) => Close();
 
     private void UpdateScheduleControlsEnabled(bool enabled)
     {

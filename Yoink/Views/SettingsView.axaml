@@ -1,0 +1,108 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="using:FluentAvalonia.UI.Controls"
+             x:Class="Yoink.Views.SettingsView">
+
+    <ScrollViewer>
+        <StackPanel Margin="0,0,4,24" Spacing="16" MaxWidth="640">
+
+            <TextBlock Text="Settings" Classes="AppTitle" FontSize="20" />
+
+            <ui:FASettingsExpander Header="Appearance" IconSource="Color" IsExpanded="True">
+                <ui:FASettingsExpanderItem Content="Theme">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <ComboBox Name="CboTheme" Width="120" SelectionChanged="CboTheme_SelectionChanged">
+                            <ComboBoxItem>System</ComboBoxItem>
+                            <ComboBoxItem>Light</ComboBoxItem>
+                            <ComboBoxItem>Dark</ComboBoxItem>
+                        </ComboBox>
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+                <ui:FASettingsExpanderItem Content="Accent color"
+                                            Description="Pick whatever matches your mood — it only recolors primary buttons and progress bars, nothing functional.">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Name="BtnAccentBlue" Classes="AccentSwatch" Tag="Blue"
+                                    Background="#2F6FED" ToolTip.Tip="Yoink Blue" Click="BtnAccentSwatch_Click" />
+                            <Button Name="BtnAccentOrange" Classes="AccentSwatch" Tag="Orange"
+                                    Background="#E95420" ToolTip.Tip="Ubuntu Orange" Click="BtnAccentSwatch_Click" />
+                            <Button Name="BtnAccentPurple" Classes="AccentSwatch" Tag="Purple"
+                                    Background="#8B5CF6" ToolTip.Tip="Grab Purple" Click="BtnAccentSwatch_Click" />
+                            <Button Name="BtnAccentGreen" Classes="AccentSwatch" Tag="Green"
+                                    Background="#22A06B" ToolTip.Tip="Snatch Green" Click="BtnAccentSwatch_Click" />
+                            <Button Name="BtnAccentRed" Classes="AccentSwatch" Tag="Red"
+                                    Background="#E5484D" ToolTip.Tip="Heist Red" Click="BtnAccentSwatch_Click" />
+                        </StackPanel>
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+            </ui:FASettingsExpander>
+
+            <ui:FASettingsExpander Header="Auto-catch &amp; background" IconSource="Sync" IsExpanded="True">
+                <ui:FASettingsExpanderItem Content="Watch clipboard for YouTube links"
+                                            Description="When on, copying a YouTube link prompts to add it to the queue — nothing downloads without confirming first.">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <ToggleSwitch Name="ChkClipboardWatch" OnContent="" OffContent=""
+                                      IsCheckedChanged="ChkClipboardWatch_IsCheckedChanged" />
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+                <ui:FASettingsExpanderItem Content="Keep running in tray when closed"
+                                            Description="Leave off if your system tray doesn't show app icons (plain GNOME without an extension, for instance) — otherwise closing the window would leave it with no way back.">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <ToggleSwitch Name="ChkMinimizeToTray" OnContent="" OffContent=""
+                                      IsCheckedChanged="ChkMinimizeToTray_IsCheckedChanged" />
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+            </ui:FASettingsExpander>
+
+            <ui:FASettingsExpander Header="Downloads" IconSource="Download" IsExpanded="True">
+                <ui:FASettingsExpanderItem Content="Concurrent downloads">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <NumericUpDown Name="NudMaxConcurrent" Width="120"
+                                       Minimum="1" Maximum="10" Increment="1" FormatString="0"
+                                       ValueChanged="NudMaxConcurrent_ValueChanged" />
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+                <ui:FASettingsExpanderItem Content="Per-download limit (KB/s)"
+                                            Description="0 or blank means unlimited.">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <NumericUpDown Name="NudPerDownloadLimit" Width="120"
+                                       Minimum="0" Maximum="1000000" Increment="100" FormatString="0"
+                                       PlaceholderText="Unlimited" ValueChanged="NudPerDownloadLimit_ValueChanged" />
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+                <ui:FASettingsExpanderItem Content="Global limit (KB/s)"
+                                            Description="Split evenly across concurrent downloads; the smaller of the two limits applies to each one.">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <NumericUpDown Name="NudGlobalLimit" Width="120"
+                                       Minimum="0" Maximum="1000000" Increment="100" FormatString="0"
+                                       PlaceholderText="Unlimited" ValueChanged="NudGlobalLimit_ValueChanged" />
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+            </ui:FASettingsExpander>
+
+            <ui:FASettingsExpander Header="Scheduling" IconSource="Calendar" IsExpanded="True">
+                <ui:FASettingsExpanderItem Content="Only download during these hours">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <ToggleSwitch Name="ChkSchedulingEnabled" OnContent="" OffContent=""
+                                      IsCheckedChanged="ChkSchedulingEnabled_IsCheckedChanged" />
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+                <ui:FASettingsExpanderItem Content="From"
+                                            Description="New downloads only start in this window (e.g. 10 PM to 6 AM for overnight) — one already running when it ends is left to finish rather than interrupted.">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <TimePicker Name="TpScheduleStart" MinuteIncrement="15"
+                                    SelectedTimeChanged="TpScheduleStart_SelectedTimeChanged" />
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+                <ui:FASettingsExpanderItem Content="To">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <TimePicker Name="TpScheduleEnd" MinuteIncrement="15"
+                                    SelectedTimeChanged="TpScheduleEnd_SelectedTimeChanged" />
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+            </ui:FASettingsExpander>
+
+        </StackPanel>
+    </ScrollViewer>
+
+</UserControl>
