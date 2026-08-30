@@ -14,9 +14,13 @@ namespace Yoink.Services;
 /// The download queue & persistence layer (README roadmap step 3): a persisted queue of
 /// pending/active/paused/completed/failed downloads, stored in SQLite (queue.db) alongside
 /// settings.json in the user's per-user config directory, with pause/resume/cancel/retry/reorder
-/// support. A single background loop processes one item at a time (concurrency limits are a later
-/// roadmap step) via <see cref="YtDlpClient"/> for resolution/download and reports progress
-/// through <see cref="ItemChanged"/>.
+/// support. A background loop processes up to <see cref="AppSettings.MaxConcurrentDownloads"/>
+/// items at once (README roadmap step 7), gated by the configured schedule window when scheduling
+/// is on, each with a per-download speed cap derived from
+/// <see cref="AppSettings.PerDownloadSpeedLimitKBps"/>/<see cref="AppSettings.GlobalSpeedLimitKBps"/>
+/// — see <see cref="ProcessLoopAsync"/> and <see cref="ComputeRateLimitKBps"/> for exactly how.
+/// Calls into <see cref="YtDlpClient"/> for resolution/download and reports progress through
+/// <see cref="ItemChanged"/>.
 ///
 /// This queue doubles as download history — it's never pruned, so completed/failed items stay
 /// visible in <c>Views.MainWindow</c>'s queue view (roadmap step 4) rather than living in a
@@ -31,7 +35,17 @@ public sealed class DownloadQueueService : IDisposable
         "queue.db");
 
     private readonly YtDlpClient _ytDlp;
-    private readonly string _connectionString;
+    private readonly SqliteConnection _connection;
+
+    // SQLite only ever allows one writer at a time regardless of how many connections you open —
+    // opening a fresh one per call just adds lock-contention/retry overhead for no real
+    // parallelism. A single shared connection, with every access serialized through this lock,
+    // sidesteps that entirely: writes for concurrently-processing items (README roadmap step 7)
+    // queue up briefly instead of contending for the SQLite file lock. Found the hard way — an
+    // earlier per-call-connection version measurably serialized two "concurrent" downloads because
+    // their status-write contention was slower than either download itself.
+    private readonly SemaphoreSlim _dbLock = new(1, 1);
+
     private readonly CancellationTokenSource _stoppingCts = new();
     private readonly SemaphoreSlim _workAvailable = new(0);
     private readonly ConcurrentDictionary<long, CancellationTokenSource> _activeCancellations = new();
@@ -48,7 +62,9 @@ public sealed class DownloadQueueService : IDisposable
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = path }.ToString();
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path }.ToString();
+        _connection = new SqliteConnection(connectionString);
+        _connection.Open();
 
         EnsureSchema();
         RecoverStaleActiveItems();
@@ -59,39 +75,41 @@ public sealed class DownloadQueueService : IDisposable
     /// <summary>Raised whenever an item's status or progress changes — a future queue view binds to this.</summary>
     public event Action<DownloadQueueItem>? ItemChanged;
 
-    public async Task<IReadOnlyList<DownloadQueueItem>> GetAllAsync(CancellationToken cancellationToken = default)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT * FROM download_queue ORDER BY Position ASC";
+    public Task<IReadOnlyList<DownloadQueueItem>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        WithLockAsync(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT * FROM download_queue ORDER BY Position ASC";
 
-        var items = new List<DownloadQueueItem>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            items.Add(ReadItem(reader));
+            var items = new List<DownloadQueueItem>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                items.Add(ReadItem(reader));
 
-        return items;
-    }
+            return (IReadOnlyList<DownloadQueueItem>)items;
+        }, cancellationToken);
 
     public async Task<DownloadQueueItem> EnqueueAsync(string url, int resolution, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("A URL is required.", nameof(url));
 
-        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            INSERT INTO download_queue (Url, Title, Resolution, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt)
-            VALUES ($url, '', $resolution, NULL, $status, 0, NULL,
-                    (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt);
-            SELECT last_insert_rowid();
-            """;
-        command.Parameters.AddWithValue("$url", url);
-        command.Parameters.AddWithValue("$resolution", resolution);
-        command.Parameters.AddWithValue("$status", DownloadQueueStatus.Pending.ToString());
-        command.Parameters.AddWithValue("$createdAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture));
+        var id = await WithLockAsync(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO download_queue (Url, Title, Resolution, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt)
+                VALUES ($url, '', $resolution, NULL, $status, 0, NULL,
+                        (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt);
+                SELECT last_insert_rowid();
+                """;
+            command.Parameters.AddWithValue("$url", url);
+            command.Parameters.AddWithValue("$resolution", resolution);
+            command.Parameters.AddWithValue("$status", DownloadQueueStatus.Pending.ToString());
+            command.Parameters.AddWithValue("$createdAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture));
 
-        var id = (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+            return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+        }, cancellationToken).ConfigureAwait(false);
 
         var item = new DownloadQueueItem
         {
@@ -180,35 +198,51 @@ public sealed class DownloadQueueService : IDisposable
         _workAvailable.Release();
     }
 
-    public async Task ReorderAsync(long id, int newPosition, CancellationToken cancellationToken = default)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE download_queue SET Position = $position WHERE Id = $id";
-        command.Parameters.AddWithValue("$position", newPosition);
-        command.Parameters.AddWithValue("$id", id);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
+    public Task ReorderAsync(long id, int newPosition, CancellationToken cancellationToken = default) =>
+        WithLockAsync(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "UPDATE download_queue SET Position = $position WHERE Id = $id";
+            command.Parameters.AddWithValue("$position", newPosition);
+            command.Parameters.AddWithValue("$id", id);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
 
+    /// <summary>
+    /// Drives up to <c>AppSettings.MaxConcurrentDownloads</c> items at once (README roadmap step 7)
+    /// and only starts new ones inside the configured schedule window, if scheduling is on. Doesn't
+    /// await <see cref="ProcessItemAsync"/> — it's fired and left running so the loop can
+    /// immediately check for more capacity, relying on <see cref="_activeCancellations"/> (which
+    /// ProcessItemAsync populates synchronously before its first await, so this always sees an
+    /// accurate count with no race) to know how many are already in flight. There's no signal for
+    /// "the schedule window just opened" or "a setting changed", so the wait between iterations is
+    /// capped at 30s as a periodic recheck rather than only waking on <see cref="_workAvailable"/>.
+    /// </summary>
     private async Task ProcessLoopAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            DownloadQueueItem? next;
-            try
+            var settings = SettingsService.Load();
+            var capacity = Math.Max(1, settings.MaxConcurrentDownloads) - _activeCancellations.Count;
+
+            DownloadQueueItem? next = null;
+            if (capacity > 0 && IsWithinSchedule(settings))
             {
-                next = await GetNextPendingAsync(stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
+                try
+                {
+                    next = await GetNextPendingAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
             }
 
             if (next is null)
             {
                 try
                 {
-                    await _workAvailable.WaitAsync(stoppingToken).ConfigureAwait(false);
+                    await _workAvailable.WaitAsync(TimeSpan.FromSeconds(30), stoppingToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -218,8 +252,41 @@ public sealed class DownloadQueueService : IDisposable
                 continue;
             }
 
-            await ProcessItemAsync(next, stoppingToken).ConfigureAwait(false);
+            _ = ProcessItemAsync(next, stoppingToken);
         }
+    }
+
+    private static bool IsWithinSchedule(AppSettings settings) =>
+        !settings.SchedulingEnabled ||
+        IsWithinWindow(TimeOnly.FromDateTime(DateTime.Now), settings.ScheduleStart, settings.ScheduleEnd);
+
+    /// <summary>
+    /// Split out from <see cref="IsWithinSchedule"/> as a pure function of an explicit "now" purely
+    /// so it's independently testable without needing to control the system clock.
+    /// </summary>
+    private static bool IsWithinWindow(TimeOnly now, TimeOnly start, TimeOnly end) =>
+        start <= end
+            ? now >= start && now < end // same-day window, e.g. 09:00-17:00
+            : now >= start || now < end; // wraps past midnight, e.g. 22:00-06:00
+
+    /// <summary>
+    /// The smaller of the per-download cap and this download's share of the global cap (global ÷
+    /// MaxConcurrentDownloads) — see <see cref="AppSettings.GlobalSpeedLimitKBps"/> for why it's a
+    /// static split rather than a live rebalance. Null (unlimited) only when neither is set.
+    /// </summary>
+    private static int? ComputeRateLimitKBps(AppSettings settings)
+    {
+        int? perDownload = settings.PerDownloadSpeedLimitKBps is > 0 ? settings.PerDownloadSpeedLimitKBps : null;
+        int? globalShare = settings.GlobalSpeedLimitKBps is > 0
+            ? settings.GlobalSpeedLimitKBps / Math.Max(1, settings.MaxConcurrentDownloads)
+            : null;
+
+        if (perDownload is null)
+            return globalShare;
+        if (globalShare is null)
+            return perDownload;
+
+        return Math.Min(perDownload.Value, globalShare.Value);
     }
 
     private async Task ProcessItemAsync(DownloadQueueItem item, CancellationToken stoppingToken)
@@ -248,11 +315,17 @@ public sealed class DownloadQueueService : IDisposable
                 RaiseChanged(item);
             });
 
+            // Re-read settings rather than reusing whatever ProcessLoopAsync last saw: this item
+            // may have been sitting Pending for a while, and the speed-limit/concurrency settings
+            // could have changed since.
+            var rateLimitKBps = ComputeRateLimitKBps(SettingsService.Load());
+
             await _ytDlp.DownloadAsync(
                 item.Url,
                 selector,
                 item.FilePath,
                 expectedSegmentCount: 2,
+                rateLimitKBps: rateLimitKBps,
                 progress: progress,
                 cancellationToken: itemCts.Token).ConfigureAwait(false);
 
@@ -301,16 +374,16 @@ public sealed class DownloadQueueService : IDisposable
         return Path.Combine(AppContext.BaseDirectory, fileName);
     }
 
-    private async Task<DownloadQueueItem?> GetNextPendingAsync(CancellationToken cancellationToken)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT * FROM download_queue WHERE Status = $status ORDER BY Position ASC LIMIT 1";
-        command.Parameters.AddWithValue("$status", DownloadQueueStatus.Pending.ToString());
+    private Task<DownloadQueueItem?> GetNextPendingAsync(CancellationToken cancellationToken) =>
+        WithLockAsync(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT * FROM download_queue WHERE Status = $status ORDER BY Position ASC LIMIT 1";
+            command.Parameters.AddWithValue("$status", DownloadQueueStatus.Pending.ToString());
 
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadItem(reader) : null;
-    }
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadItem(reader) : null;
+        }, cancellationToken);
 
     private async Task UpdateStatusAsync(
         long id,
@@ -319,22 +392,26 @@ public sealed class DownloadQueueService : IDisposable
         bool completeWaiter = false,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-        await using (var command = connection.CreateCommand())
+        // Re-reads the full row after updating rather than constructing a bare Id+Status item:
+        // callers (the queue view included) treat every ItemChanged payload as a complete,
+        // authoritative snapshot, so a partial one would blank out Title/Progress/etc. wherever
+        // it's applied. Both statements run inside the same lock acquisition so nothing else can
+        // write to this row between the update and the re-read.
+        var item = await WithLockAsync(async () =>
         {
-            command.CommandText = clearError
-                ? "UPDATE download_queue SET Status = $status, ErrorMessage = NULL WHERE Id = $id"
-                : "UPDATE download_queue SET Status = $status WHERE Id = $id";
-            command.Parameters.AddWithValue("$status", status.ToString());
-            command.Parameters.AddWithValue("$id", id);
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
+            await using (var command = _connection.CreateCommand())
+            {
+                command.CommandText = clearError
+                    ? "UPDATE download_queue SET Status = $status, ErrorMessage = NULL WHERE Id = $id"
+                    : "UPDATE download_queue SET Status = $status WHERE Id = $id";
+                command.Parameters.AddWithValue("$status", status.ToString());
+                command.Parameters.AddWithValue("$id", id);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
 
-        // Re-read the full row rather than constructing a bare Id+Status item: callers (the queue
-        // view included) treat every ItemChanged payload as a complete, authoritative snapshot, so
-        // a partial one would blank out Title/Progress/etc. wherever it's applied.
-        var item = await GetItemAsync(id, connection, cancellationToken).ConfigureAwait(false);
+            return await GetItemNoLockAsync(id, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+
         if (item is null)
             return;
 
@@ -344,9 +421,9 @@ public sealed class DownloadQueueService : IDisposable
             CompleteWaiter(item);
     }
 
-    private static async Task<DownloadQueueItem?> GetItemAsync(long id, SqliteConnection connection, CancellationToken cancellationToken)
+    private async Task<DownloadQueueItem?> GetItemNoLockAsync(long id, CancellationToken cancellationToken)
     {
-        await using var command = connection.CreateCommand();
+        await using var command = _connection.CreateCommand();
         command.CommandText = "SELECT * FROM download_queue WHERE Id = $id";
         command.Parameters.AddWithValue("$id", id);
 
@@ -354,23 +431,23 @@ public sealed class DownloadQueueService : IDisposable
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadItem(reader) : null;
     }
 
-    private async Task PersistAsync(DownloadQueueItem item, CancellationToken cancellationToken = default)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE download_queue
-            SET Title = $title, FilePath = $filePath, Status = $status, Progress = $progress, ErrorMessage = $errorMessage
-            WHERE Id = $id
-            """;
-        command.Parameters.AddWithValue("$title", item.Title);
-        command.Parameters.AddWithValue("$filePath", (object?)item.FilePath ?? DBNull.Value);
-        command.Parameters.AddWithValue("$status", item.Status.ToString());
-        command.Parameters.AddWithValue("$progress", item.Progress);
-        command.Parameters.AddWithValue("$errorMessage", (object?)item.ErrorMessage ?? DBNull.Value);
-        command.Parameters.AddWithValue("$id", item.Id);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
+    private Task PersistAsync(DownloadQueueItem item, CancellationToken cancellationToken = default) =>
+        WithLockAsync(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                UPDATE download_queue
+                SET Title = $title, FilePath = $filePath, Status = $status, Progress = $progress, ErrorMessage = $errorMessage
+                WHERE Id = $id
+                """;
+            command.Parameters.AddWithValue("$title", item.Title);
+            command.Parameters.AddWithValue("$filePath", (object?)item.FilePath ?? DBNull.Value);
+            command.Parameters.AddWithValue("$status", item.Status.ToString());
+            command.Parameters.AddWithValue("$progress", item.Progress);
+            command.Parameters.AddWithValue("$errorMessage", (object?)item.ErrorMessage ?? DBNull.Value);
+            command.Parameters.AddWithValue("$id", item.Id);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
 
     private void RaiseChanged(DownloadQueueItem item) => ItemChanged?.Invoke(item);
 
@@ -389,11 +466,13 @@ public sealed class DownloadQueueService : IDisposable
             reader.GetString(reader.GetOrdinal("CreatedAt")), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
     };
 
+    /// <summary>
+    /// Called from the constructor, before anything else could possibly touch <see cref="_connection"/>
+    /// — no locking needed yet.
+    /// </summary>
     private void EnsureSchema()
     {
-        using var connection = new SqliteConnection(_connectionString);
-        connection.Open();
-        using var command = connection.CreateCommand();
+        using var command = _connection.CreateCommand();
         command.CommandText = """
             CREATE TABLE IF NOT EXISTS download_queue (
                 Id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -414,24 +493,43 @@ public sealed class DownloadQueueService : IDisposable
     /// <summary>
     /// Any item still marked <see cref="DownloadQueueStatus.Active"/> at startup means the app
     /// was closed or crashed mid-download — put it back to <see cref="DownloadQueueStatus.Pending"/>
-    /// so the queue picks it up (and yt-dlp resumes it) again instead of leaving it stuck.
+    /// so the queue picks it up (and yt-dlp resumes it) again instead of leaving it stuck. Also
+    /// called from the constructor before the processing loop starts, so — like
+    /// <see cref="EnsureSchema"/> — nothing else could be contending for <see cref="_connection"/> yet.
     /// </summary>
     private void RecoverStaleActiveItems()
     {
-        using var connection = new SqliteConnection(_connectionString);
-        connection.Open();
-        using var command = connection.CreateCommand();
+        using var command = _connection.CreateCommand();
         command.CommandText = "UPDATE download_queue SET Status = $pending WHERE Status = $active";
         command.Parameters.AddWithValue("$pending", DownloadQueueStatus.Pending.ToString());
         command.Parameters.AddWithValue("$active", DownloadQueueStatus.Active.ToString());
         command.ExecuteNonQuery();
     }
 
-    private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)
+    private async Task<T> WithLockAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
     {
-        var connection = new SqliteConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        return connection;
+        await _dbLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await action().ConfigureAwait(false);
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
+    private async Task WithLockAsync(Func<Task> action, CancellationToken cancellationToken)
+    {
+        await _dbLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await action().ConfigureAwait(false);
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
     }
 
     public void Dispose()
@@ -451,5 +549,7 @@ public sealed class DownloadQueueService : IDisposable
 
         _stoppingCts.Dispose();
         _workAvailable.Dispose();
+        _dbLock.Dispose();
+        _connection.Dispose();
     }
 }
