@@ -66,6 +66,12 @@ project root — that's exactly the flat structure this reorg moved away from.
     opens `AddDownloadDialog` pre-filled with the detected URL rather than queuing anything directly — see
     `ClipboardWatcherService`'s doc comment for why. The checkbox's state round-trips through
     `AppSettings.ClipboardWatchEnabled`.
+  - The header's "Keep running in tray" `CheckBox` (`ChkMinimizeToTray`) just persists
+    `AppSettings.MinimizeToTrayOnClose`; `App.axaml.cs` (see below) is what actually reads it and decides
+    what closing the window does — this window doesn't hold a live copy of that flag.
+  - `OnQueueItemChanged` also fires a `NotificationService.NotifyAsync` call when an item's status
+    transitions *into* `Completed`/`Failed` (comparing against the replaced item's previous status, not on
+    every progress tick or on items loaded at startup) — the notifications half of roadmap step 6.
 - `AddDownloadDialog.axaml` / `.axaml.cs` — the "add download" dialog half of step 4: URL + resolution
   picker, calls `DownloadQueueService.EnqueueAsync` directly and closes. Shown via the static
   `AddDownloadDialog.ShowAsync(owner, queue, prefillUrl)`, same pattern as `MessageBoxWindow.ShowAsync`.
@@ -122,13 +128,25 @@ project root — that's exactly the flat structure this reorg moved away from.
   action are kept separate. Known limitation, called out in its doc comment: Wayland compositors can
   restrict clipboard reads when the app isn't focused, so detection may be less reliable there than on X11
   or Windows while the app is in the background.
+- `NotificationService.cs` — the notifications half of "background operation & notifications" (README
+  roadmap step 6). A static, stateless `NotifyAsync(title, message)` that shells out to `notify-send`
+  (part of libnotify-bin) — **Linux only**; Windows/macOS are a documented gap (real toast notifications
+  there need app identity/packaging this project doesn't have yet, so that's left for the packaging step).
+  Best-effort like `YtDlpClient`'s error paths aren't — a missing `notify-send` or no notification daemon
+  running just means silently no toast, never a crash or a `MessageBoxWindow`. Called from
+  `Views.MainWindow.OnQueueItemChanged` when an item's status transitions *into* `Completed`/`Failed` (not
+  on every event — see that method for how it detects a transition), which is deliberately a
+  `Views.MainWindow` responsibility rather than `DownloadQueueService`'s: the queue service stays
+  UI/OS-notification agnostic, and this still works while the window is hidden in the tray since hiding
+  doesn't unsubscribe `ItemChanged` or stop the queue's background loop.
 
 ### Models (`Yoink/Models/`)
 
 - `AppSettings.cs` — `AppSettings` + `ThemePreference`. Theme mapping itself
   (`ThemePreference` → Avalonia's `ThemeVariant`) stays in `App.ToThemeVariant` (see below), not here.
-  Also carries `ClipboardWatchEnabled` (default `true`), read/written by `Views.MainWindow`'s
-  "Watch clipboard" checkbox.
+  Also carries `ClipboardWatchEnabled` (default `true`, read/written by `Views.MainWindow`'s "Watch
+  clipboard" checkbox) and `MinimizeToTrayOnClose` (default `false` — see its doc comment and the
+  `App.axaml.cs` note below for why this one defaults off while clipboard watching defaults on).
 - `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus`. Plain data, no
   `INotifyPropertyChanged` — see the `Views.MainWindow`/`DownloadQueueService` notes above for how the
   queue view stays live without it. Carries presentational computed properties
@@ -145,7 +163,8 @@ project root — that's exactly the flat structure this reorg moved away from.
 ### Root-level files
 
 - `Program.cs` — entry point; builds and starts the Avalonia app (`AppBuilder.Configure<App>()...StartWithClassicDesktopLifetime`).
-- `App.axaml` / `App.axaml.cs` — Avalonia `Application` bootstrap; sets the Fluent theme and creates `MainWindow` as the desktop lifetime's main window.
+- `App.axaml` / `App.axaml.cs` — Avalonia `Application` bootstrap; sets the Fluent theme, creates `MainWindow` as the desktop lifetime's main window, and (`SetUpTrayIcon`) sets up the tray icon side of README roadmap step 6's "background operation": a `TrayIcon` with Show/Quit `NativeMenuItem`s, and a `MainWindow.Closing` handler that only ever intercepts a user-initiated close (`WindowCloseReason.WindowClosing` specifically — an app- or OS-driven shutdown is deliberately let through unmodified, or `desktop.TryShutdown()` from the tray menu's "Quit" would never actually terminate). What that intercepted close *does* depends on `AppSettings.MinimizeToTrayOnClose`: hide the window if it's on, or call `desktop.TryShutdown()` itself if it's off (the desktop lifetime is switched to `ShutdownMode.OnExplicitShutdown` up front specifically so this handler is always the one deciding, rather than an implicit shutdown racing it). Defaulting that setting to off — rather than clipboard watching's default-on — is deliberate: an unsupported tray (plain GNOME without an extension, for instance) would otherwise strand the window hidden with no visible way back.
+- `Assets/tray-icon.png` — the one app icon, used for both the tray icon and `MainWindow`'s window icon (`Icon="/Assets/tray-icon.png"` in its XAML). Included via `<AvaloniaResource Include="Assets/**" />` in `Yoink.csproj`; reference new assets the same way rather than embedding them another way.
 - Theme: `App.axaml` sets `RequestedThemeVariant` at startup from the saved preference (`ThemePreference.System/Light/Dark` in `AppSettings`). `System` maps to Avalonia's `ThemeVariant.Default`, which follows the OS light/dark setting live. `MainWindow` has a "Theme" combo box that flips `Application.Current.RequestedThemeVariant` immediately and persists the choice via `SettingsService`. `App.ToThemeVariant` is the single place that maps preference → `ThemeVariant`; reuse it rather than re-deriving the mapping.
 - **`BRANDING.md`** (repo root) — the design tokens (colors, type, spacing/radius) implemented as Avalonia resources/style classes in `App.axaml`. Read it before adding new UI: reuse the existing style classes (`Card`, `AppTitle`, `Subtitle`, `SectionTitle`, `Caption`, `Primary` on buttons) instead of one-off styling, so new screens stay visually consistent with the rest of the app.
 

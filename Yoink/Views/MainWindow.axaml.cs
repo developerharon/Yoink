@@ -35,6 +35,7 @@ public partial class MainWindow : Window
         var settings = SettingsService.Load();
         CboTheme.SelectedIndex = (int)settings.Theme;
         ChkClipboardWatch.IsChecked = settings.ClipboardWatchEnabled;
+        ChkMinimizeToTray.IsChecked = settings.MinimizeToTrayOnClose;
 
         LstQueue.ItemsSource = _items;
         UpdateEmptyQueueVisibility();
@@ -86,6 +87,17 @@ public partial class MainWindow : Window
 
         var settings = SettingsService.Load();
         settings.ClipboardWatchEnabled = enabled;
+        SettingsService.Save(settings);
+    }
+
+    /// <summary>
+    /// Just persists the setting — App.axaml.cs's Closing handler reads it fresh from disk each
+    /// time the window is closed, rather than this window holding a live flag for it to poll.
+    /// </summary>
+    private void ChkMinimizeToTray_IsCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        var settings = SettingsService.Load();
+        settings.MinimizeToTrayOnClose = ChkMinimizeToTray.IsChecked == true;
         SettingsService.Save(settings);
     }
 
@@ -169,6 +181,10 @@ public partial class MainWindow : Window
     /// (see the comment in <see cref="DownloadQueueService"/>'s UpdateStatusAsync), so replacing
     /// the whole entry is enough — <see cref="DownloadQueueItem"/> doesn't need to implement
     /// INotifyPropertyChanged for the row to refresh.
+    ///
+    /// This keeps firing — and still notifies on completion (below) — even while the window is
+    /// hidden in the tray: closing the window only hides it (see App.axaml.cs), it doesn't
+    /// unsubscribe this handler or stop the queue's background loop.
     /// </summary>
     private void OnQueueItemChanged(DownloadQueueItem item)
     {
@@ -184,13 +200,26 @@ public partial class MainWindow : Window
                 }
             }
 
+            var previousStatus = index >= 0 ? _items[index].Status : (DownloadQueueStatus?)null;
+
             if (index >= 0)
                 _items[index] = item;
             else
                 _items.Insert(0, item);
 
+            if (previousStatus != item.Status && item.Status is DownloadQueueStatus.Completed or DownloadQueueStatus.Failed)
+                _ = NotifyDownloadFinishedAsync(item);
+
             UpdateEmptyQueueVisibility();
         });
+    }
+
+    private static Task NotifyDownloadFinishedAsync(DownloadQueueItem item)
+    {
+        var completed = item.Status == DownloadQueueStatus.Completed;
+        var title = completed ? "Download complete" : "Download failed";
+        var message = completed ? item.DisplayTitle : $"{item.DisplayTitle} — {item.ErrorMessage}";
+        return NotificationService.NotifyAsync(title, message);
     }
 
     protected override void OnClosed(EventArgs e)
