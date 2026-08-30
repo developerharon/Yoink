@@ -62,6 +62,16 @@ more load-bearing than later ones. Checked-off steps are implemented and in use,
   app watches the clipboard for URLs matching known patterns (YouTube links, direct file links) and prompts
   to download. The browser extension is more IDM-like and reliable; clipboard watching is far less work to
   build first.
+  - [x] Clipboard monitoring — built as `ClipboardWatcherService`, polling the clipboard (no OS-agnostic
+    "changed" event exists) for YouTube URLs and, on a match, opening the same add-download dialog
+    pre-filled rather than downloading silently. A "Watch clipboard" toggle in the header controls it, on
+    by default. Known limitation: Wayland compositors can restrict clipboard reads while the app isn't
+    focused, so this is less reliable there than on X11/Windows in the background — a platform limitation
+    to live with for now, not something worth building around yet.
+  - [ ] Browser extension — not started. A much bigger, separate effort (its own codebase per browser, a
+    native-messaging host to install, store review or side-loading) relative to what it'd add on top of
+    clipboard monitoring at this project's current scale — worth revisiting on its own rather than bundling
+    into this step.
 - [ ] **6. Background operation & notifications** — a system tray icon so the app can run in the background and
   catch downloads without a window open, plus toast/desktop notifications on download complete/failed. On
   Ubuntu this means using Avalonia's tray support (or a platform-specific fallback) plus libnotify-based
