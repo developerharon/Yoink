@@ -2,7 +2,7 @@ using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 
-namespace Yoink;
+namespace Yoink.Views;
 
 /// <summary>
 /// A minimal modal dialog used in place of WinForms' MessageBox, which Avalonia does not provide.

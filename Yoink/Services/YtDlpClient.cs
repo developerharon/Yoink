@@ -11,7 +11,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Yoink;
+namespace Yoink.Services;
 
 /// <summary>
 /// One selectable quality/format for a video, as reported by yt-dlp. YouTube mostly no longer

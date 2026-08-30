@@ -1,0 +1,33 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Yoink.Views.AddDownloadDialog"
+        Title="Add download"
+        Width="420" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="false"
+        ShowInTaskbar="false">
+
+    <StackPanel Margin="20" Spacing="14">
+        <StackPanel Spacing="4">
+            <TextBlock Text="YouTube URL" Classes="Caption" />
+            <TextBox Name="TxtUrl" PlaceholderText="https://www.youtube.com/watch?v=..." />
+        </StackPanel>
+
+        <StackPanel Spacing="4">
+            <TextBlock Text="Resolution" Classes="Caption" />
+            <ComboBox Name="CboResolution" Width="110" SelectedIndex="0">
+                <ComboBoxItem>360</ComboBoxItem>
+                <ComboBoxItem>480</ComboBoxItem>
+                <ComboBoxItem>720</ComboBoxItem>
+                <ComboBoxItem>1080</ComboBoxItem>
+                <ComboBoxItem>1440</ComboBoxItem>
+            </ComboBox>
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+            <Button Name="BtnCancel" Content="Cancel" Click="BtnCancel_Click" />
+            <Button Name="BtnAdd" Content="Add to queue" Classes="Primary" Click="BtnAdd_Click" />
+        </StackPanel>
+    </StackPanel>
+
+</Window>

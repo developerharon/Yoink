@@ -20,20 +20,114 @@ There are no lint or test commands/projects in this repo.
 
 ## Architecture
 
-- `Yoink/Program.cs` — entry point; builds and starts the Avalonia app (`AppBuilder.Configure<App>()...StartWithClassicDesktopLifetime`).
-- `Yoink/App.axaml` / `App.axaml.cs` — Avalonia `Application` bootstrap; sets the Fluent theme and creates `MainWindow` as the desktop lifetime's main window.
-- `Yoink/MainWindow.axaml` / `MainWindow.axaml.cs` — the entire app UI and logic lives here, in code-behind (no MVVM/ViewModel layer — keep new features in this same style unless the UI grows enough to justify introducing one):
-  - `BtnDownload_Click` reads the URL (`TxtUrl`) and desired resolution (`CboResolution`), enqueues a `DownloadQueueService` item, and awaits its outcome via `WaitForCompletionAsync` — see `DownloadQueueService` below. It's split into enqueue-then-wait (rather than one `EnqueueAndWaitAsync` call) specifically so `_trackedItemId` is set before the download starts, so live progress events for that item aren't missed.
-  - Download progress arrives via `DownloadQueueService.ItemChanged` (filtered to whichever item id is currently tracked), marshalled to the UI thread with `Dispatcher.UIThread.Post` before updating `ProgressBar`/`LblPercentage`.
-  - Errors (download failures, cancellation) are surfaced via `MessageBoxWindow`, not left to propagate uncaught. A missing `yt-dlp` on PATH is checked once at startup and also surfaced this way.
-- `Yoink/MessageBoxWindow.axaml` / `.axaml.cs` — a minimal modal dialog (title + message + OK button) used in place of WinForms' `MessageBox`, which Avalonia doesn't provide out of the box. Use `MessageBoxWindow.ShowAsync(owner, message, title)` for any new user-facing success/error dialogs rather than adding another one-off dialog type.
-- `Yoink/AppSettings.cs` / `Yoink/SettingsService.cs` — persisted user preferences (currently just theme). `SettingsService` reads/writes JSON at `%AppData%`/`~/.config`/`Yoink/settings.json` (via `Environment.SpecialFolder.ApplicationData`, so it works the same way cross-platform) and falls back to defaults if the file is missing or corrupt. This is one of the few exceptions to "everything lives in MainWindow" — it's persistence, not UI, so it stays a separate class; keep future non-UI state here rather than folding it into the window code-behind.
+### Folder structure & namespaces
+
+The project outgrew "every file directly under `Yoink/`" once the queue view (step 4) added a second
+window and several service/model classes, so it's organized by role, folder-per-namespace:
+
+- `Yoink/Views/` (namespace `Yoink.Views`) — every `Window` and its code-behind. UI logic lives here in
+  plain code-behind, not a separate ViewModel layer — that's a deliberate, still-current choice (see below),
+  not a leftover from before the reorg.
+- `Yoink/Services/` (namespace `Yoink.Services`) — non-UI logic: persistence, the download engine, the
+  yt-dlp wrapper, the queue. No Avalonia UI types belong here.
+- `Yoink/Models/` (namespace `Yoink.Models`) — plain data classes/enums shared across services and views.
+- `Yoink/Converters/` (namespace `Yoink.Converters`) — `IValueConverter` implementations for XAML bindings.
+- `Yoink/Program.cs`, `Yoink/App.axaml`/`.axaml.cs`, `Yoink/app.manifest` — stay at the project root
+  (namespace `Yoink`); they're bootstrap, not a feature area.
+
+Keep adding files under whichever of these a new class fits, rather than dropping new files back at the
+project root — that's exactly the flat structure this reorg moved away from.
+
+### Views (`Yoink/Views/`)
+
+- `MainWindow.axaml` / `.axaml.cs` — the queue view from README roadmap step 4: an `ItemsControl` bound to
+  an `ObservableCollection<DownloadQueueItem>`, one row per queue entry (title, status, a progress bar
+  when active/paused, and Pause/Resume/Cancel/Retry/"Show in folder" buttons — visibility of each driven by
+  `DownloadQueueItem`'s `CanPause`/`CanResume`/etc. computed properties, no converters needed). This is also
+  where "Recent downloads" ended up: the queue is never pruned, so completed/failed items just stay in the
+  same list rather than living in a separate history view.
+  - The collection is seeded once at startup from `DownloadQueueService.GetAllAsync()`, then kept live via
+    `DownloadQueueService.ItemChanged`: `OnQueueItemChanged` replaces the matching item in the collection
+    wholesale (by `Id`) rather than mutating one already bound in the UI. `DownloadQueueItem` is a plain
+    class with no `INotifyPropertyChanged` — see the note on `DownloadQueueService.UpdateStatusAsync` below
+    for why every `ItemChanged` payload is safe to treat as a complete replacement.
+  - Each row's action buttons read the bound `DownloadQueueItem` off `((Control)sender).DataContext` and
+    call straight into `DownloadQueueService` (`PauseAsync`/`ResumeAsync`/`CancelAsync`/`RetryAsync`).
+  - "+ Add download" opens `AddDownloadDialog`; the queue view doesn't need anything back from it — the new
+    item shows up on its own via `ItemChanged`.
+  - A missing `yt-dlp` on PATH is checked once at startup and surfaced via `MessageBoxWindow`.
+  - The "details/settings panel" half of step 4 is still minimal — just the existing Theme picker in the
+    header. A real settings screen is more roadmap step 7's territory (speed limits, concurrency, scheduling
+    all need one); revisit then rather than inventing settings early to fill the panel out.
+- `AddDownloadDialog.axaml` / `.axaml.cs` — the "add download" dialog half of step 4: URL + resolution
+  picker, calls `DownloadQueueService.EnqueueAsync` directly and closes. Shown via the static
+  `AddDownloadDialog.ShowAsync(owner, queue)`, same pattern as `MessageBoxWindow.ShowAsync`.
+- `MessageBoxWindow.axaml` / `.axaml.cs` — a minimal modal dialog (title + message + OK button) used in
+  place of WinForms' `MessageBox`, which Avalonia doesn't provide out of the box. Use
+  `MessageBoxWindow.ShowAsync(owner, message, title)` for anything that genuinely needs a blocking
+  acknowledgment (validation errors, the yt-dlp-missing check) — per-download success/failure no longer
+  goes through it now that the queue view shows each item's outcome inline, so don't reintroduce a modal
+  popup per download.
+
+### Services (`Yoink/Services/`)
+
+- `SettingsService.cs` — persisted user preferences (currently just theme), paired with `Models/AppSettings.cs`.
+  Reads/writes JSON at `%AppData%`/`~/.config`/`Yoink/settings.json` (via
+  `Environment.SpecialFolder.ApplicationData`, so it works the same way cross-platform) and falls back to
+  defaults if the file is missing or corrupt.
+- `DownloadEngine.cs` — the generic core download engine from README roadmap step 1: a source-agnostic,
+  resumable single-file HTTP downloader (range-request resume, progress via `IProgress<double>`,
+  retry-with-backoff, cancellation). It writes to `<destination>.partial` and only moves the file into place
+  on success. **Not currently wired into anything** — YouTube downloads go through `yt-dlp`'s own downloader
+  instead (see below), since reimplementing yt-dlp's segment-download-and-mux behavior on top of this engine
+  would just be redoing what it already does correctly. This class is the foundation for a later roadmap
+  step: plain, non-YouTube direct-link downloads (e.g. the browser-extension/clipboard-watching "auto-catch"
+  step).
+- `YtDlpClient.cs` — the YouTube extraction layer from README roadmap step 2. Shells out to the `yt-dlp`
+  CLI (must be on PATH — see README) for everything that talks to YouTube: `GetVideoInfoAsync` (title +
+  available formats), `GetPlaylistEntriesAsync` (flat playlist/channel expansion), and `DownloadAsync`
+  (download **and**, via ffmpeg, mux separate video-only/audio-only streams into one file — YouTube mostly
+  doesn't serve pre-muxed formats above a low resolution anymore). Parses yt-dlp's `--dump-json` output and
+  its `[download] NN.N%` progress lines itself; no yt-dlp Python wrapper NuGet package is used. Defines its
+  own small DTOs (`YtDlpFormat`/`YtDlpVideoInfo`/`YtDlpPlaylistEntry`) in the same file rather than under
+  `Models/` — they're yt-dlp's own JSON contract, not app-wide models. See the class doc comment for why
+  extraction/download is delegated to yt-dlp rather than reimplemented (same "far less maintenance"
+  reasoning the README roadmap calls out) and why that means `DownloadEngine` sits unused for now.
+- `DownloadQueueService.cs` (paired with `Models/DownloadQueueItem.cs`) — the persisted download queue from
+  README roadmap step 3: SQLite-backed (`queue.db`, same config directory as settings, via
+  `Microsoft.Data.Sqlite`), with `Pending`/`Active`/`Paused`/`Completed`/`Failed`/`Canceled` states and
+  `Enqueue`/`Pause`/`Resume`/`Cancel`/`Retry`/`Reorder` operations, all persisted so a killed/crashed app
+  recovers cleanly (any row still `Active` at startup — meaning the app died mid-download — is reset to
+  `Pending`). A single background loop processes one pending item at a time (concurrency limits are a later
+  roadmap step), calling into `YtDlpClient` and raising `ItemChanged` as status/progress change. Pause/cancel
+  both cancel the in-flight yt-dlp process; resuming re-invokes yt-dlp, which picks up from its own `.part`
+  file rather than restarting. `UpdateStatusAsync` (used by e.g. pausing/canceling an item that isn't
+  currently downloading) re-reads the full row after updating it rather than raising a bare `Id`+`Status`
+  object — every `ItemChanged` subscriber, `Views.MainWindow` included, relies on each payload being a
+  complete snapshot it can drop straight into place.
+
+### Models (`Yoink/Models/`)
+
+- `AppSettings.cs` — `AppSettings` + `ThemePreference`. Theme mapping itself
+  (`ThemePreference` → Avalonia's `ThemeVariant`) stays in `App.ToThemeVariant` (see below), not here.
+- `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus`. Plain data, no
+  `INotifyPropertyChanged` — see the `Views.MainWindow`/`DownloadQueueService` notes above for how the
+  queue view stays live without it. Carries presentational computed properties
+  (`DisplayTitle`/`Subtitle`/`StatusText`/`ProgressPercent`/`CanPause`/etc.) so the queue view's
+  `DataTemplate` can bind directly without converters — the same pattern the old, now-removed
+  `DownloadHistoryEntry` used for the "Recent downloads" list.
+
+### Converters (`Yoink/Converters/`)
+
+- `DownloadQueueStatusToBrushConverter.cs` — the one `IValueConverter` in the app, mapping
+  `DownloadQueueStatus` to the semantic Success/Error/muted brush (see `BRANDING.md`) for the queue view's
+  status text.
+
+### Root-level files
+
+- `Program.cs` — entry point; builds and starts the Avalonia app (`AppBuilder.Configure<App>()...StartWithClassicDesktopLifetime`).
+- `App.axaml` / `App.axaml.cs` — Avalonia `Application` bootstrap; sets the Fluent theme and creates `MainWindow` as the desktop lifetime's main window.
 - Theme: `App.axaml` sets `RequestedThemeVariant` at startup from the saved preference (`ThemePreference.System/Light/Dark` in `AppSettings`). `System` maps to Avalonia's `ThemeVariant.Default`, which follows the OS light/dark setting live. `MainWindow` has a "Theme" combo box that flips `Application.Current.RequestedThemeVariant` immediately and persists the choice via `SettingsService`. `App.ToThemeVariant` is the single place that maps preference → `ThemeVariant`; reuse it rather than re-deriving the mapping.
-- `Yoink/DownloadHistoryEntry.cs` / `Yoink/DownloadHistoryService.cs` — the "Recent downloads" list shown under the download form. Same pattern as settings: plain data class + a static service that reads/writes JSON (`history.json`, same config directory), capped at the 50 most recent entries. `MainWindow` keeps the live list in an `ObservableCollection<DownloadHistoryEntry>` bound to `LstHistory.ItemsSource`; every successful *and* failed download appends a new entry and re-saves.
-- `Yoink/DownloadStatusToBrushConverter.cs` — the one `IValueConverter` in the app, mapping `DownloadStatus` to the semantic Success/Error brush (see `BRANDING.md`) for the history list's status text.
-- `Yoink/DownloadEngine.cs` — the generic core download engine from README roadmap step 1: a source-agnostic, resumable single-file HTTP downloader (range-request resume, progress via `IProgress<double>`, retry-with-backoff, cancellation). It writes to `<destination>.partial` and only moves the file into place on success. **Not currently wired into anything** — YouTube downloads go through `yt-dlp`'s own downloader instead (see below), since reimplementing yt-dlp's segment-download-and-mux behavior on top of this engine would just be redoing what it already does correctly. This class is the foundation for a later roadmap step: plain, non-YouTube direct-link downloads (e.g. the browser-extension/clipboard-watching "auto-catch" step).
-- `Yoink/YtDlpClient.cs` — the YouTube extraction layer from README roadmap step 2. Shells out to the `yt-dlp` CLI (must be on PATH — see README) for everything that talks to YouTube: `GetVideoInfoAsync` (title + available formats), `GetPlaylistEntriesAsync` (flat playlist/channel expansion), and `DownloadAsync` (download **and**, via ffmpeg, mux separate video-only/audio-only streams into one file — YouTube mostly doesn't serve pre-muxed formats above a low resolution anymore). Parses yt-dlp's `--dump-json` output and its `[download] NN.N%` progress lines itself; no yt-dlp Python wrapper NuGet package is used. See the class doc comment for why extraction/download is delegated to yt-dlp rather than reimplemented (same "far less maintenance" reasoning the README roadmap calls out) and why that means `DownloadEngine` sits unused for now.
-- `Yoink/DownloadQueueItem.cs` / `Yoink/DownloadQueueService.cs` — the persisted download queue from README roadmap step 3: SQLite-backed (`queue.db`, same config directory as settings/history, via `Microsoft.Data.Sqlite`), with `Pending`/`Active`/`Paused`/`Completed`/`Failed`/`Canceled` states and `Enqueue`/`Pause`/`Resume`/`Cancel`/`Retry`/`Reorder` operations, all persisted so a killed/crashed app recovers cleanly (any row still `Active` at startup — meaning the app died mid-download — is reset to `Pending`). A single background loop processes one pending item at a time (concurrency limits are a later roadmap step), calling into `YtDlpClient` and raising `ItemChanged` as status/progress change. Pause/cancel both cancel the in-flight yt-dlp process; resuming re-invokes yt-dlp, which picks up from its own `.part` file rather than restarting. **The queue view itself — a list UI to browse/manage items and actually reach Pause/Resume/Reorder — is roadmap step 4 and doesn't exist yet.** Today `MainWindow` only ever has at most one item in flight, via `EnqueueAsync` + `WaitForCompletionAsync`, so every download already goes through this persisted, resumable, retryable path even though the UI still looks like a single one-shot download.
 - **`BRANDING.md`** (repo root) — the design tokens (colors, type, spacing/radius) implemented as Avalonia resources/style classes in `App.axaml`. Read it before adding new UI: reuse the existing style classes (`Card`, `AppTitle`, `Subtitle`, `SectionTitle`, `Caption`, `Primary` on buttons) instead of one-off styling, so new screens stay visually consistent with the rest of the app.
 
 ### Key dependency: yt-dlp (external, on PATH)
