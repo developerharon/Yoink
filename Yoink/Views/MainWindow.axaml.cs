@@ -207,12 +207,32 @@ public partial class MainWindow : Window
 
         try
         {
+            // ArgumentList, not a hand-quoted Arguments string: filePath comes from the
+            // downloaded video's title (BuildDestinationPath in DownloadQueueService), which is
+            // remote-controlled — anyone can upload a YouTube video with an attacker-chosen
+            // title. A title containing a literal '"' would have broken out of the quoting below
+            // and let extra arguments reach explorer.exe/open/xdg-open. ArgumentList sidesteps
+            // that entirely, the same way every process launch elsewhere in this codebase already
+            // does (YtDlpClient, NotificationService).
             if (OperatingSystem.IsWindows())
-                Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{filePath}\"") { UseShellExecute = true });
+            {
+                var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+                psi.ArgumentList.Add($"/select,{filePath}");
+                Process.Start(psi);
+            }
             else if (OperatingSystem.IsMacOS())
-                Process.Start(new ProcessStartInfo("open", $"-R \"{filePath}\"") { UseShellExecute = true });
+            {
+                var psi = new ProcessStartInfo("open") { UseShellExecute = true };
+                psi.ArgumentList.Add("-R");
+                psi.ArgumentList.Add(filePath);
+                Process.Start(psi);
+            }
             else
-                Process.Start(new ProcessStartInfo("xdg-open", $"\"{directory}\"") { UseShellExecute = true });
+            {
+                var psi = new ProcessStartInfo("xdg-open") { UseShellExecute = true };
+                psi.ArgumentList.Add(directory);
+                Process.Start(psi);
+            }
         }
         catch
         {

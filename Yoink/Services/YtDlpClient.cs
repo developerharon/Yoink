@@ -100,7 +100,13 @@ public sealed class YtDlpClient
     /// <summary>Resolves a single video's title and available formats.</summary>
     public async Task<YtDlpVideoInfo> GetVideoInfoAsync(string url, CancellationToken cancellationToken = default)
     {
-        var json = await RunForStdOutAsync(["--no-playlist", "--dump-json", url], cancellationToken).ConfigureAwait(false);
+        // The trailing "--" tells yt-dlp's own argument parser that everything after it is
+        // positional, never an option — see CreateProcess's doc comment for why this matters:
+        // url is whatever the user (or the clipboard watcher) handed us, unvalidated, and
+        // ArgumentList only rules out *shell* injection, not yt-dlp treating a value that starts
+        // with "-" as one of its own flags (e.g. "--exec=...", which runs an arbitrary command
+        // after a successful download).
+        var json = await RunForStdOutAsync(["--no-playlist", "--dump-json", "--", url], cancellationToken).ConfigureAwait(false);
 
         using var document = JsonDocument.Parse(json);
         return ParseVideoInfo(document.RootElement);
@@ -113,7 +119,8 @@ public sealed class YtDlpClient
     public async Task<IReadOnlyList<YtDlpPlaylistEntry>> GetPlaylistEntriesAsync(string url, CancellationToken cancellationToken = default)
     {
         // yt-dlp prints one JSON object per line (JSON Lines) when dumping multiple entries.
-        var output = await RunForStdOutAsync(["--flat-playlist", "--dump-json", url], cancellationToken).ConfigureAwait(false);
+        // See GetVideoInfoAsync above for why the "--" before url is load-bearing, not decorative.
+        var output = await RunForStdOutAsync(["--flat-playlist", "--dump-json", "--", url], cancellationToken).ConfigureAwait(false);
 
         var entries = new List<YtDlpPlaylistEntry>();
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
@@ -192,6 +199,8 @@ public sealed class YtDlpClient
             arguments.Add($"{rateLimitKBps.Value}K");
         }
 
+        // See GetVideoInfoAsync's doc comment for why "--" has to precede url here too.
+        arguments.Add("--");
         arguments.Add(url);
 
         using var process = CreateProcess(arguments);
