@@ -17,6 +17,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets Yoink.Tests reach the handful of pure-logic methods (schedule/rate-limit math, yt-dlp
+         JSON parsing, etc.) that are internal rather than public purely for that reason — see each
+         one's own doc comment. -->
+    <InternalsVisibleTo Include="Yoink.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.1.1" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />

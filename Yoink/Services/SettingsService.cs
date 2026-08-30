@@ -11,7 +11,13 @@ namespace Yoink.Services;
 /// </summary>
 public static class SettingsService
 {
-    private static readonly string SettingsPath = Path.Combine(
+    /// <summary>
+    /// Internal (not private) and mutable, rather than a private readonly, purely so
+    /// Yoink.Tests can redirect it to an isolated temp file for the duration of a test instead of
+    /// ever touching the real user's actual settings.json — reset it back afterward. Nothing in the
+    /// app itself ever reassigns this outside of tests.
+    /// </summary>
+    internal static string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Yoink",
         "settings.json");

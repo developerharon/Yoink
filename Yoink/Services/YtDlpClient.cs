@@ -64,6 +64,21 @@ public sealed class YtDlpClient
     private static readonly Regex ProgressLineRegex = new(@"\[download\]\s+([\d.]+)%", RegexOptions.Compiled);
 
     /// <summary>
+    /// Pulled out of <see cref="DownloadAsync"/>'s stdout loop (which calls this, not the regex
+    /// directly) purely so the line-matching itself is testable without a real yt-dlp process.
+    /// </summary>
+    internal static bool TryParseProgressPercent(string line, out double percent)
+    {
+        var match = ProgressLineRegex.Match(line);
+        if (match.Success &&
+            double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out percent))
+            return true;
+
+        percent = 0;
+        return false;
+    }
+
+    /// <summary>
     /// Quick presence check so callers can surface a friendly "please install yt-dlp" message
     /// instead of a bare process-start failure the first time it's actually needed.
     /// </summary>
@@ -103,20 +118,30 @@ public sealed class YtDlpClient
         var entries = new List<YtDlpPlaylistEntry>();
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
-            using var document = JsonDocument.Parse(line);
-            var root = document.RootElement;
-
-            var id = root.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? string.Empty : string.Empty;
-            var title = root.TryGetProperty("title", out var titleProp) ? titleProp.GetString() ?? id : id;
-            var entryUrl = root.TryGetProperty("url", out var urlProp) ? urlProp.GetString()
-                : root.TryGetProperty("webpage_url", out var webpageProp) ? webpageProp.GetString()
-                : null;
-
-            if (!string.IsNullOrEmpty(entryUrl))
-                entries.Add(new YtDlpPlaylistEntry(id, title, entryUrl));
+            if (ParsePlaylistEntryLine(line) is { } entry)
+                entries.Add(entry);
         }
 
         return entries;
+    }
+
+    /// <summary>
+    /// One line of yt-dlp's flat-playlist JSON-lines output, or null if it has no URL to speak of.
+    /// Split out of <see cref="GetPlaylistEntriesAsync"/>'s loop, and internal rather than private,
+    /// purely so Yoink.Tests can feed it sample lines directly.
+    /// </summary>
+    internal static YtDlpPlaylistEntry? ParsePlaylistEntryLine(string line)
+    {
+        using var document = JsonDocument.Parse(line);
+        var root = document.RootElement;
+
+        var id = root.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? string.Empty : string.Empty;
+        var title = root.TryGetProperty("title", out var titleProp) ? titleProp.GetString() ?? id : id;
+        var entryUrl = root.TryGetProperty("url", out var urlProp) ? urlProp.GetString()
+            : root.TryGetProperty("webpage_url", out var webpageProp) ? webpageProp.GetString()
+            : null;
+
+        return string.IsNullOrEmpty(entryUrl) ? null : new YtDlpPlaylistEntry(id, title, entryUrl);
     }
 
     /// <summary>
@@ -202,9 +227,7 @@ public sealed class YtDlpClient
                 continue;
             }
 
-            var match = ProgressLineRegex.Match(line);
-            if (match.Success &&
-                double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var percent))
+            if (TryParseProgressPercent(line, out var percent))
             {
                 var overall = (fileIndex + percent / 100.0) / totalFiles;
                 progress?.Report(Math.Clamp(overall, 0.0, 1.0));
@@ -229,7 +252,8 @@ public sealed class YtDlpClient
         progress?.Report(1.0);
     }
 
-    private static YtDlpVideoInfo ParseVideoInfo(JsonElement root)
+    /// <summary>Internal (not private) so Yoink.Tests can feed it sample yt-dlp JSON directly.</summary>
+    internal static YtDlpVideoInfo ParseVideoInfo(JsonElement root)
     {
         var id = root.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? string.Empty : string.Empty;
         var title = root.TryGetProperty("title", out var titleProp) ? titleProp.GetString() ?? id : id;
@@ -316,7 +340,8 @@ public sealed class YtDlpClient
             into.AppendLine(line);
     }
 
-    private static string ExtractErrorSummary(string stderr)
+    /// <summary>Internal (not private) so Yoink.Tests can exercise it directly.</summary>
+    internal static string ExtractErrorSummary(string stderr)
     {
         var lines = stderr.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var errorLine = lines.LastOrDefault(l => l.StartsWith("ERROR:", StringComparison.Ordinal));
