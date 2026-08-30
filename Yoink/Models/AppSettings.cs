@@ -13,6 +13,15 @@ public class AppSettings
     /// via the header toggle for anyone who'd rather not have their clipboard polled at all.
     /// </summary>
     public bool ClipboardWatchEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Whether closing the main window hides it to the tray icon instead of quitting the app (see
+    /// <c>App.SetUpTrayIcon</c>). Off by default: on a Linux desktop without tray/StatusNotifierItem
+    /// support (plain GNOME without an extension, for instance) the tray icon simply won't be
+    /// visible, and hiding-not-closing by default there would strand the window with no way back.
+    /// Opt-in via the header toggle once someone's confirmed their tray actually shows it.
+    /// </summary>
+    public bool MinimizeToTrayOnClose { get; set; }
 }
 
 /// <summary>
