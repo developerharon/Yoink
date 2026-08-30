@@ -23,7 +23,7 @@ namespace Yoink.Services;
 /// </summary>
 public sealed class UpdateService
 {
-    private const string RepoUrl = "https://github.com/developerharon/YourPlaylistDownloader";
+    private const string RepoUrl = "https://github.com/developerharon/Yoink";
 
     private readonly UpdateManager _manager;
 
