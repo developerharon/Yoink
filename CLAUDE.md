@@ -56,19 +56,16 @@ project root — that's exactly the flat structure this reorg moved away from.
   - "+ Add download" opens `AddDownloadDialog`; the queue view doesn't need anything back from it — the new
     item shows up on its own via `ItemChanged`.
   - A missing `yt-dlp` on PATH is checked once at startup and surfaced via `MessageBoxWindow`.
-  - The "details/settings panel" half of step 4 is still minimal — just the existing Theme picker in the
-    header. A real settings screen is more roadmap step 7's territory (speed limits, concurrency, scheduling
-    all need one); revisit then rather than inventing settings early to fill the panel out.
-  - The header's "Watch clipboard" `CheckBox` (`ChkClipboardWatch`) is the clipboard-monitoring half of
-    roadmap step 5. `MainWindow_Opened` (not the constructor — the clipboard isn't guaranteed available
-    before the window is attached to a screen) creates a `ClipboardWatcherService`, wired to
-    `Window.Clipboard` via `ReadClipboardTextAsync`. When it raises `UrlDetected`, `OnClipboardUrlDetected`
-    opens `AddDownloadDialog` pre-filled with the detected URL rather than queuing anything directly — see
-    `ClipboardWatcherService`'s doc comment for why. The checkbox's state round-trips through
-    `AppSettings.ClipboardWatchEnabled`.
-  - The header's "Keep running in tray" `CheckBox` (`ChkMinimizeToTray`) just persists
-    `AppSettings.MinimizeToTrayOnClose`; `App.axaml.cs` (see below) is what actually reads it and decides
-    what closing the window does — this window doesn't hold a live copy of that flag.
+  - The header is now just the title and a single "⚙ Settings" button opening `SettingsWindow` (below) —
+    Theme/clipboard-watch/minimize-to-tray all moved there as of roadmap step 7 ("a settings screen to
+    control all of it"), so this window itself no longer holds any settings-editing controls or handlers.
+  - `MainWindow_Opened` (not the constructor — the clipboard isn't guaranteed available before the window
+    is attached to a screen) creates the `ClipboardWatcherService`, wired to `Window.Clipboard` via
+    `ReadClipboardTextAsync` and to `AppSettings.ClipboardWatchEnabled` via a live `Func<bool>` passed to
+    its constructor (see `ClipboardWatcherService` below for why it's a delegate rather than a settable
+    property). When it raises `UrlDetected`, `OnClipboardUrlDetected` opens `AddDownloadDialog` pre-filled
+    with the detected URL rather than queuing anything directly — see `ClipboardWatcherService`'s doc
+    comment for why.
   - `OnQueueItemChanged` also fires a `NotificationService.NotifyAsync` call when an item's status
     transitions *into* `Completed`/`Failed` (comparing against the replaced item's previous status, not on
     every progress tick or on items loaded at startup) — the notifications half of roadmap step 6.
@@ -76,6 +73,18 @@ project root — that's exactly the flat structure this reorg moved away from.
   picker, calls `DownloadQueueService.EnqueueAsync` directly and closes. Shown via the static
   `AddDownloadDialog.ShowAsync(owner, queue, prefillUrl)`, same pattern as `MessageBoxWindow.ShowAsync`.
   `prefillUrl` is optional — the clipboard watcher (above) is the only caller that passes one.
+- `SettingsWindow.axaml` / `.axaml.cs` — the settings screen from README roadmap step 7 ("a settings
+  screen to control all of it"): Theme, "Watch clipboard", "Keep running in tray" (all moved here from
+  `MainWindow`'s header), plus the new concurrency/speed-limit/scheduling controls this step adds. Every
+  control persists its own change immediately via `SettingsService` (read-modify-write, same pattern the
+  header toggles used before) — there's no separate "Save" button, just "Close". Nothing here needs to
+  push a live update anywhere: `DownloadQueueService`'s processing loop and `ClipboardWatcherService` both
+  re-read settings fresh at the point they need them, so a change here takes effect on their very next
+  check (within one processing-loop iteration or clipboard poll). Speed limits use `NumericUpDown` with 0
+  or an empty field both meaning "unlimited" (`ToNullableLimit`); scheduling uses `TimePicker` (its
+  `SelectedTime` is a `TimeSpan?`, converted to/from `AppSettings`' `TimeOnly` fields by hand since there's
+  no built-in conversion). Opened modally via `new SettingsWindow().ShowDialog(owner)` from `MainWindow`'s
+  "⚙ Settings" button.
 - `MessageBoxWindow.axaml` / `.axaml.cs` — a minimal modal dialog (title + message + OK button) used in
   place of WinForms' `MessageBox`, which Avalonia doesn't provide out of the box. Use
   `MessageBoxWindow.ShowAsync(owner, message, title)` for anything that genuinely needs a blocking
@@ -101,10 +110,13 @@ project root — that's exactly the flat structure this reorg moved away from.
   CLI (must be on PATH — see README) for everything that talks to YouTube: `GetVideoInfoAsync` (title +
   available formats), `GetPlaylistEntriesAsync` (flat playlist/channel expansion), and `DownloadAsync`
   (download **and**, via ffmpeg, mux separate video-only/audio-only streams into one file — YouTube mostly
-  doesn't serve pre-muxed formats above a low resolution anymore). Parses yt-dlp's `--dump-json` output and
-  its `[download] NN.N%` progress lines itself; no yt-dlp Python wrapper NuGet package is used. Defines its
-  own small DTOs (`YtDlpFormat`/`YtDlpVideoInfo`/`YtDlpPlaylistEntry`) in the same file rather than under
-  `Models/` — they're yt-dlp's own JSON contract, not app-wide models. See the class doc comment for why
+  doesn't serve pre-muxed formats above a low resolution anymore). `DownloadAsync` also takes an optional
+  `rateLimitKBps`, passed straight through as yt-dlp's own `--limit-rate` (README roadmap step 7) — the
+  caller (`DownloadQueueService`) is the one that works out what value that should be, this class just
+  applies it. Parses yt-dlp's `--dump-json` output and its `[download] NN.N%` progress lines itself; no
+  yt-dlp Python wrapper NuGet package is used. Defines its own small DTOs
+  (`YtDlpFormat`/`YtDlpVideoInfo`/`YtDlpPlaylistEntry`) in the same file rather than under `Models/` —
+  they're yt-dlp's own JSON contract, not app-wide models. See the class doc comment for why
   extraction/download is delegated to yt-dlp rather than reimplemented (same "far less maintenance"
   reasoning the README roadmap calls out) and why that means `DownloadEngine` sits unused for now.
 - `DownloadQueueService.cs` (paired with `Models/DownloadQueueItem.cs`) — the persisted download queue from
@@ -112,22 +124,41 @@ project root — that's exactly the flat structure this reorg moved away from.
   `Microsoft.Data.Sqlite`), with `Pending`/`Active`/`Paused`/`Completed`/`Failed`/`Canceled` states and
   `Enqueue`/`Pause`/`Resume`/`Cancel`/`Retry`/`Reorder` operations, all persisted so a killed/crashed app
   recovers cleanly (any row still `Active` at startup — meaning the app died mid-download — is reset to
-  `Pending`). A single background loop processes one pending item at a time (concurrency limits are a later
-  roadmap step), calling into `YtDlpClient` and raising `ItemChanged` as status/progress change. Pause/cancel
-  both cancel the in-flight yt-dlp process; resuming re-invokes yt-dlp, which picks up from its own `.part`
-  file rather than restarting. `UpdateStatusAsync` (used by e.g. pausing/canceling an item that isn't
-  currently downloading) re-reads the full row after updating it rather than raising a bare `Id`+`Status`
-  object — every `ItemChanged` subscriber, `Views.MainWindow` included, relies on each payload being a
-  complete snapshot it can drop straight into place.
+  `Pending`). Calls into `YtDlpClient` and raises `ItemChanged` as status/progress change. Pause/cancel both
+  cancel the in-flight yt-dlp process; resuming re-invokes yt-dlp, which picks up from its own `.part` file
+  rather than restarting. `UpdateStatusAsync` (used by e.g. pausing/canceling an item that isn't currently
+  downloading) re-reads the full row after updating it rather than raising a bare `Id`+`Status` object —
+  every `ItemChanged` subscriber, `Views.MainWindow` included, relies on each payload being a complete
+  snapshot it can drop straight into place.
+  - **Concurrency, speed limits, scheduling (README roadmap step 7)**: `ProcessLoopAsync` now runs up to
+    `AppSettings.MaxConcurrentDownloads` items at once, using `_activeCancellations.Count` as the live count
+    in flight (populated synchronously by `ProcessItemAsync` before its first await, so the loop's capacity
+    check never races it). New items only start inside the configured schedule window when
+    `AppSettings.SchedulingEnabled` is on (`IsWithinSchedule`/`IsWithinWindow` — the latter is a pure
+    function of an explicit "now", split out purely so it's independently testable). Each download's
+    `--limit-rate` comes from `ComputeRateLimitKBps`: the smaller of the per-download cap and this
+    download's static share of the global cap (global ÷ `MaxConcurrentDownloads`, not a live rebalance —
+    see `AppSettings.GlobalSpeedLimitKBps`'s doc comment for why). All three re-read settings fresh rather
+    than being told about changes, matching the rest of the app's settings-handling pattern.
+  - **Single shared connection**: all DB access goes through one `SqliteConnection` opened once in the
+    constructor, serialized by a `SemaphoreSlim` (`WithLockAsync`) rather than each method opening its own
+    connection. This isn't just tidiness — found the hard way while testing concurrency, opening a fresh
+    connection per call meant two simultaneously-processing items' status writes measurably serialized on
+    SQLite's file lock (with retry/backoff stalls of several seconds), which defeated the concurrency this
+    step is supposed to add. A single connection sidesteps the contention entirely, since SQLite only
+    supports one writer at a time regardless of how many connections ask for it.
 - `ClipboardWatcherService.cs` — the clipboard-monitoring half of the "auto-catch mechanism" from README
   roadmap step 5 (the browser-extension half is not built — see the README roadmap note on why clipboard
   watching came first). Polls the clipboard on a timer (Avalonia's clipboard API has no change event, and
   there's no OS-agnostic native one either) via a caller-supplied `Func<Task<string?>>`, and raises
   `UrlDetected` when the text changes to something matching a conservative YouTube-URL regex. It never
   downloads anything itself — see `Views.MainWindow.OnClipboardUrlDetected` above for why detection and
-  action are kept separate. Known limitation, called out in its doc comment: Wayland compositors can
-  restrict clipboard reads when the app isn't focused, so detection may be less reliable there than on X11
-  or Windows while the app is in the background.
+  action are kept separate. Whether it's active is a caller-supplied `Func<bool> isEnabled`, checked fresh
+  on every poll — not a settable property — so `Views.MainWindow` can hand it
+  `() => SettingsService.Load().ClipboardWatchEnabled` once and never need to push a live update when the
+  setting changes elsewhere (`SettingsWindow`, in particular). Known limitation, called out in its doc
+  comment: Wayland compositors can restrict clipboard reads when the app isn't focused, so detection may be
+  less reliable there than on X11 or Windows while the app is in the background.
 - `NotificationService.cs` — the notifications half of "background operation & notifications" (README
   roadmap step 6). A static, stateless `NotifyAsync(title, message)` that shells out to `notify-send`
   (part of libnotify-bin) — **Linux only**; Windows/macOS are a documented gap (real toast notifications
@@ -144,9 +175,14 @@ project root — that's exactly the flat structure this reorg moved away from.
 
 - `AppSettings.cs` — `AppSettings` + `ThemePreference`. Theme mapping itself
   (`ThemePreference` → Avalonia's `ThemeVariant`) stays in `App.ToThemeVariant` (see below), not here.
-  Also carries `ClipboardWatchEnabled` (default `true`, read/written by `Views.MainWindow`'s "Watch
-  clipboard" checkbox) and `MinimizeToTrayOnClose` (default `false` — see its doc comment and the
-  `App.axaml.cs` note below for why this one defaults off while clipboard watching defaults on).
+  Every property here is surfaced through `Views.SettingsWindow` and re-read fresh by whatever needs it
+  (`DownloadQueueService`'s loop, `ClipboardWatcherService`'s poll, `App.axaml.cs`'s Closing handler) rather
+  than pushed to it live — see the class doc comment. Besides `Theme`: `ClipboardWatchEnabled` (default
+  `true`) and `MinimizeToTrayOnClose` (default `false` — see its own doc comment for why this one defaults
+  off while clipboard watching defaults on); and, from roadmap step 7,
+  `MaxConcurrentDownloads`/`PerDownloadSpeedLimitKBps`/`GlobalSpeedLimitKBps`/`SchedulingEnabled`/
+  `ScheduleStart`/`ScheduleEnd` — see each property's doc comment, and `DownloadQueueService`'s notes above,
+  for exactly how they combine.
 - `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus`. Plain data, no
   `INotifyPropertyChanged` — see the `Views.MainWindow`/`DownloadQueueService` notes above for how the
   queue view stays live without it. Carries presentational computed properties

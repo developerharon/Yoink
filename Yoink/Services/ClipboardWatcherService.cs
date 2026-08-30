@@ -30,20 +30,26 @@ public sealed class ClipboardWatcherService : IDisposable
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly Func<Task<string?>> _readClipboardText;
+    private readonly Func<bool> _isEnabled;
     private readonly TimeSpan _pollInterval;
     private readonly CancellationTokenSource _stoppingCts = new();
     private readonly Task _pollLoop;
     private string? _lastSeenText;
 
-    public ClipboardWatcherService(Func<Task<string?>> readClipboardText, TimeSpan? pollInterval = null)
+    /// <param name="readClipboardText">Reads the current clipboard text (or null if there isn't any).</param>
+    /// <param name="isEnabled">
+    /// Checked at the start of every poll — the caller's own source of truth for whether watching
+    /// should currently be active (typically <c>AppSettings.ClipboardWatchEnabled</c>, re-read fresh
+    /// each time rather than pushed in) — so a setting change takes effect within one poll interval
+    /// without this class needing a settable property or knowing anything about settings itself.
+    /// </param>
+    public ClipboardWatcherService(Func<Task<string?>> readClipboardText, Func<bool> isEnabled, TimeSpan? pollInterval = null)
     {
         _readClipboardText = readClipboardText;
+        _isEnabled = isEnabled;
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(1);
         _pollLoop = Task.Run(() => PollLoopAsync(_stoppingCts.Token));
     }
-
-    /// <summary>Off by default in a fresh instance; the caller sets this from the persisted setting.</summary>
-    public bool Enabled { get; set; }
 
     /// <summary>
     /// Raised (on a background thread — marshal to the UI thread yourself) when the clipboard's
@@ -57,7 +63,7 @@ public sealed class ClipboardWatcherService : IDisposable
         {
             try
             {
-                if (Enabled)
+                if (_isEnabled())
                 {
                     var text = await _readClipboardText().ConfigureAwait(false);
                     if (!string.IsNullOrWhiteSpace(text) && text != _lastSeenText)

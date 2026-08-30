@@ -88,10 +88,16 @@ still open.
   > (matching this step's own "Ubuntu... libnotify" scoping); Windows/macOS toasts are a known gap, left for
   > the packaging step below since they need an app identity this project doesn't have yet.
 
-- [ ] **Speed limits, concurrency & scheduling**
+- [x] **Speed limits, concurrency & scheduling**
   Speed limiting per-download and globally, concurrent-download limits, scheduling (e.g. only download
   overnight), and a settings screen to control all of it. Nice-to-haves that make it feel like a real IDM
   replacement rather than a script with a UI.
+  > Built: the queue now runs several downloads at once (up to a configurable limit), each with a
+  > per-download and/or global (KB/s, split evenly across whatever's running) speed cap passed to yt-dlp's
+  > own `--limit-rate`, plus a schedule window that only gates *starting* new downloads — one already
+  > running when the window closes is left to finish rather than interrupted. All of it, plus the settings
+  > that used to live in the main window's header (theme, clipboard watching, tray behavior), now lives in
+  > one settings screen (`SettingsWindow`), opened from a "⚙ Settings" button.
 
 - [ ] **Packaging for Ubuntu**
   Package as a self-contained .NET publish (single executable), decide on an install method (AppImage,

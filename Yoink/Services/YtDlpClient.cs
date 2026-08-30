@@ -133,11 +133,18 @@ public sealed class YtDlpClient
     /// turn yt-dlp's per-file 0-100% progress lines into one overall fraction; it has no effect on
     /// what actually gets downloaded.
     /// </param>
+    /// <param name="rateLimitKBps">
+    /// Optional speed cap in KB/s, passed straight through to yt-dlp's own `--limit-rate` (README
+    /// roadmap step 7). Null or ≤0 means unlimited. This is a per-process limit set once at launch —
+    /// combining a per-download and a global setting into this single value is the caller's job (see
+    /// <c>DownloadQueueService</c>).
+    /// </param>
     public async Task DownloadAsync(
         string url,
         string formatSelector,
         string destinationPath,
         int expectedSegmentCount = 1,
+        int? rateLimitKBps = null,
         IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -145,14 +152,24 @@ public sealed class YtDlpClient
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
-        using var process = CreateProcess([
+        var arguments = new List<string>
+        {
             "-f", formatSelector,
             "--merge-output-format", "mp4",
             "--newline",
             "--no-mtime",
             "-o", destinationPath,
-            url
-        ]);
+        };
+
+        if (rateLimitKBps is > 0)
+        {
+            arguments.Add("--limit-rate");
+            arguments.Add($"{rateLimitKBps.Value}K");
+        }
+
+        arguments.Add(url);
+
+        using var process = CreateProcess(arguments);
 
         try
         {

@@ -32,11 +32,6 @@ public partial class MainWindow : Window
         _queue = new DownloadQueueService(_ytDlp);
         _queue.ItemChanged += OnQueueItemChanged;
 
-        var settings = SettingsService.Load();
-        CboTheme.SelectedIndex = (int)settings.Theme;
-        ChkClipboardWatch.IsChecked = settings.ClipboardWatchEnabled;
-        ChkMinimizeToTray.IsChecked = settings.MinimizeToTrayOnClose;
-
         LstQueue.ItemsSource = _items;
         UpdateEmptyQueueVisibility();
 
@@ -48,10 +43,9 @@ public partial class MainWindow : Window
 
     private void MainWindow_Opened(object? sender, EventArgs e)
     {
-        _clipboardWatcher = new ClipboardWatcherService(ReadClipboardTextAsync)
-        {
-            Enabled = SettingsService.Load().ClipboardWatchEnabled
-        };
+        _clipboardWatcher = new ClipboardWatcherService(
+            ReadClipboardTextAsync,
+            () => SettingsService.Load().ClipboardWatchEnabled);
         _clipboardWatcher.UrlDetected += OnClipboardUrlDetected;
     }
 
@@ -79,28 +73,6 @@ public partial class MainWindow : Window
         Dispatcher.UIThread.Post(() => _ = AddDownloadDialog.ShowAsync(this, _queue, url));
     }
 
-    private void ChkClipboardWatch_IsCheckedChanged(object? sender, RoutedEventArgs e)
-    {
-        var enabled = ChkClipboardWatch.IsChecked == true;
-        if (_clipboardWatcher is not null)
-            _clipboardWatcher.Enabled = enabled;
-
-        var settings = SettingsService.Load();
-        settings.ClipboardWatchEnabled = enabled;
-        SettingsService.Save(settings);
-    }
-
-    /// <summary>
-    /// Just persists the setting — App.axaml.cs's Closing handler reads it fresh from disk each
-    /// time the window is closed, rather than this window holding a live flag for it to poll.
-    /// </summary>
-    private void ChkMinimizeToTray_IsCheckedChanged(object? sender, RoutedEventArgs e)
-    {
-        var settings = SettingsService.Load();
-        settings.MinimizeToTrayOnClose = ChkMinimizeToTray.IsChecked == true;
-        SettingsService.Save(settings);
-    }
-
     private async Task LoadQueueAsync()
     {
         var all = await _queue.GetAllAsync();
@@ -121,17 +93,16 @@ public partial class MainWindow : Window
         }
     }
 
-    private void CboTheme_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    /// <summary>
+    /// Theme/clipboard-watch/minimize-to-tray/concurrency/speed-limit/scheduling all live in
+    /// <see cref="SettingsWindow"/> now (README roadmap step 7) rather than scattered across this
+    /// window's header — open it modally and just let it persist its own changes; nothing needs
+    /// handing back since every consumer (this window's clipboard watcher, App.axaml.cs's Closing
+    /// handler, DownloadQueueService's loop) re-reads settings fresh at the point it needs them.
+    /// </summary>
+    private async void BtnSettings_Click(object? sender, RoutedEventArgs e)
     {
-        if (CboTheme.SelectedIndex < 0)
-            return;
-
-        var preference = (ThemePreference)CboTheme.SelectedIndex;
-        Application.Current!.RequestedThemeVariant = App.ToThemeVariant(preference);
-
-        var settings = SettingsService.Load();
-        settings.Theme = preference;
-        SettingsService.Save(settings);
+        await new SettingsWindow().ShowDialog(this);
     }
 
     private async void BtnAddDownload_Click(object? sender, RoutedEventArgs e)
