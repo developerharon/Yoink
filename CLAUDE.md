@@ -6,8 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Yoink (formerly "YourPlaylistDownloader") is a cross-platform desktop app, built with Avalonia on .NET 10,
 that downloads a YouTube video given its URL at a chosen resolution. It targets Linux as a first-class
-platform, not just Windows. There is no version roadmap to track — treat the app as free to evolve toward
-a general-purpose download manager as needed, without deferring changes to a numbered future release.
+platform, not just Windows. Treat the app as free to evolve toward a general-purpose download manager as
+needed, without deferring changes to a numbered future release.
+
+README.md no longer carries a numbered roadmap (removed deliberately for a cleaner, user-facing doc — see
+its "What it is"/"Features" sections for the current pitch instead). This file's "roadmap step N" phrasing
+below is purely internal shorthand for the fixed sequence the app was actually built in — steps 1-7 are
+done and in use; step 8 (packaging for Ubuntu, then Windows/macOS) and the browser-extension half of
+step 5's auto-catch mechanism are the two pieces still open. There's no other numbered plan to keep in sync
+with it.
 
 ## Build & run
 
