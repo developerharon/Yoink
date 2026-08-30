@@ -76,10 +76,19 @@ project root — that's exactly the flat structure this reorg moved away from.
   - `OnQueueItemChanged` also fires a `NotificationService.NotifyAsync` call when an item's status
     transitions *into* `Completed`/`Failed` (comparing against the replaced item's previous status, not on
     every progress tick or on items loaded at startup) — the notifications half of roadmap step 6.
+  - The constructor also fires `CheckForUpdatesAsync` — see `UpdateService`/`UpdatePromptDialog` below.
 - `AddDownloadDialog.axaml` / `.axaml.cs` — the "add download" dialog half of step 4: URL + resolution
   picker, calls `DownloadQueueService.EnqueueAsync` directly and closes. Shown via the static
   `AddDownloadDialog.ShowAsync(owner, queue, prefillUrl)`, same pattern as `MessageBoxWindow.ShowAsync`.
   `prefillUrl` is optional — the clipboard watcher (above) is the only caller that passes one.
+- `UpdatePromptDialog.axaml` / `.axaml.cs` — the update/distribution story's UI half (see `UpdateService`
+  below for the mechanism). Shows the new version + release notes with "Install Update"/"Later" buttons;
+  clicking "Install Update" downloads (progress bar, reusing the same pattern as everywhere else) then
+  calls `UpdateService.ApplyUpdatesAndRestart`, which exits the app, applies the update, and relaunches —
+  nothing in the click handler after that call ever runs. Shown via `MainWindow.CheckForUpdatesAsync`,
+  throttled to roughly once a day via `AppSettings.LastUpdateCheckUtc`; per the agreed update UX (see the
+  project memory this came from), this is the *only* place an update is ever downloaded or applied — the
+  check itself is silent, but installing always needs this explicit prompt first.
 - `SettingsWindow.axaml` / `.axaml.cs` — the settings screen from README roadmap step 7 ("a settings
   screen to control all of it"): Theme, "Watch clipboard", "Keep running in tray" (all moved here from
   `MainWindow`'s header), plus the new concurrency/speed-limit/scheduling controls this step adds. Every
@@ -177,6 +186,19 @@ project root — that's exactly the flat structure this reorg moved away from.
   `Views.MainWindow` responsibility rather than `DownloadQueueService`'s: the queue service stays
   UI/OS-notification agnostic, and this still works while the window is hidden in the tray since hiding
   doesn't unsubscribe `ItemChanged` or stop the queue's background loop.
+- `UpdateService.cs` — Yoink's update/distribution mechanism, wrapping the third-party
+  [Velopack](https://velopack.io/) library (`Velopack`/`Velopack.Sources` NuGet package; see the
+  `update-distribution-strategy` project memory for the full reasoning behind choosing it and the
+  per-platform plan). Reads/applies updates from this repo's GitHub Releases via
+  `Velopack.Sources.GithubSource` — no separate download server. `IsInstalled` is false for a plain
+  `dotnet run`/self-built copy (there's no Velopack install context to check against), and
+  `CheckForUpdatesAsync` short-circuits to `null` in that case rather than attempting a network call —
+  **verified this is actually safe**: a bare `new UpdateManager(...)` throws `InvalidOperationException`
+  ("No VelopackLocator has been set") unless `VelopackApp.Build().Run()` has already run once, which is
+  exactly why that call is the literal first line of `Program.Main` (see below), before Avalonia even
+  starts — every other line in this codebase, including this service's own constructor, depends on that
+  ordering. Best-effort throughout (see `CheckForUpdatesAsync`'s doc comment) — like `NotificationService`,
+  a failed check is never worth surfacing as an error.
 
 ### Models (`Yoink/Models/`)
 
@@ -189,7 +211,8 @@ project root — that's exactly the flat structure this reorg moved away from.
   off while clipboard watching defaults on); and, from roadmap step 7,
   `MaxConcurrentDownloads`/`PerDownloadSpeedLimitKBps`/`GlobalSpeedLimitKBps`/`SchedulingEnabled`/
   `ScheduleStart`/`ScheduleEnd` — see each property's doc comment, and `DownloadQueueService`'s notes above,
-  for exactly how they combine.
+  for exactly how they combine. `LastUpdateCheckUtc` throttles `UpdateService`/`Views.MainWindow`'s update
+  check to roughly once a day rather than on every launch.
 - `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus`. Plain data, no
   `INotifyPropertyChanged` — see the `Views.MainWindow`/`DownloadQueueService` notes above for how the
   queue view stays live without it. Carries presentational computed properties
@@ -205,11 +228,22 @@ project root — that's exactly the flat structure this reorg moved away from.
 
 ### Root-level files
 
-- `Program.cs` — entry point; builds and starts the Avalonia app (`AppBuilder.Configure<App>()...StartWithClassicDesktopLifetime`).
+- `Program.cs` — entry point. `VelopackApp.Build().Run()` is the **literal first line** of `Main`, before
+  `BuildAvaloniaApp()` is even touched — see `UpdateService`'s notes above for exactly why that ordering is
+  load-bearing, not just tidiness. After that, builds and starts the Avalonia app
+  (`AppBuilder.Configure<App>()...StartWithClassicDesktopLifetime`).
 - `App.axaml` / `App.axaml.cs` — Avalonia `Application` bootstrap; sets the Fluent theme, creates `MainWindow` as the desktop lifetime's main window, and (`SetUpTrayIcon`) sets up the tray icon side of README roadmap step 6's "background operation": a `TrayIcon` with Show/Quit `NativeMenuItem`s, and a `MainWindow.Closing` handler that only ever intercepts a user-initiated close (`WindowCloseReason.WindowClosing` specifically — an app- or OS-driven shutdown is deliberately let through unmodified, or `desktop.TryShutdown()` from the tray menu's "Quit" would never actually terminate). What that intercepted close *does* depends on `AppSettings.MinimizeToTrayOnClose`: hide the window if it's on, or call `desktop.TryShutdown()` itself if it's off (the desktop lifetime is switched to `ShutdownMode.OnExplicitShutdown` up front specifically so this handler is always the one deciding, rather than an implicit shutdown racing it). Defaulting that setting to off — rather than clipboard watching's default-on — is deliberate: an unsupported tray (plain GNOME without an extension, for instance) would otherwise strand the window hidden with no visible way back.
-- `Assets/tray-icon.png` — the one app icon, used for both the tray icon and `MainWindow`'s window icon (`Icon="/Assets/tray-icon.png"` in its XAML). Included via `<AvaloniaResource Include="Assets/**" />` in `Yoink.csproj`; reference new assets the same way rather than embedding them another way.
-- Theme: `App.axaml` sets `RequestedThemeVariant` at startup from the saved preference (`ThemePreference.System/Light/Dark` in `AppSettings`). `System` maps to Avalonia's `ThemeVariant.Default`, which follows the OS light/dark setting live. `MainWindow` has a "Theme" combo box that flips `Application.Current.RequestedThemeVariant` immediately and persists the choice via `SettingsService`. `App.ToThemeVariant` is the single place that maps preference → `ThemeVariant`; reuse it rather than re-deriving the mapping.
+- `Assets/tray-icon.png` — the one app icon, used for the tray icon, `MainWindow`'s and `UpdatePromptDialog`'s window icons, and (for now — see the release workflow note below) the Velopack package icon on every platform. Included via `<AvaloniaResource Include="Assets/**" />` in `Yoink.csproj`; reference new assets the same way rather than embedding them another way.
+- Theme: `App.axaml` sets `RequestedThemeVariant` at startup from the saved preference (`ThemePreference.System/Light/Dark` in `AppSettings`). `System` maps to Avalonia's `ThemeVariant.Default`, which follows the OS light/dark setting live. `Views.SettingsWindow`'s Theme combo box flips `Application.Current.RequestedThemeVariant` immediately and persists the choice via `SettingsService`. `App.ToThemeVariant` is the single place that maps preference → `ThemeVariant`; reuse it rather than re-deriving the mapping.
 - **`BRANDING.md`** (repo root) — the design tokens (colors, type, spacing/radius) implemented as Avalonia resources/style classes in `App.axaml`. Read it before adding new UI: reuse the existing style classes (`Card`, `AppTitle`, `Subtitle`, `SectionTitle`, `Caption`, `Primary` on buttons) instead of one-off styling, so new screens stay visually consistent with the rest of the app.
+- `.github/workflows/release.yml` — cuts a Velopack release on every `v*` tag push (`git tag v0.1.0 && git
+  push origin v0.1.0`), uploading packaged builds straight to this repo's GitHub Releases (no separate
+  hosting — see the `update-distribution-strategy` project memory for why, including how download counts
+  and traffic are visible there for free without building any telemetry). All three platform jobs are
+  defined, but per the agreed rollout order (Ubuntu first) the `release-windows`/`release-macos` jobs carry
+  `if: false` with a TODO explaining what's needed before flipping them on (real-hardware verification, and
+  proper `.ico`/`.icns` icons — only the Linux leg has been checked against the PNG in `Assets/`). Ordinary
+  pushes to `master` don't trigger this at all, only an explicit tag does.
 
 ### Key dependency: yt-dlp (external, on PATH)
 
@@ -221,3 +255,20 @@ extraction logic in C# and, like the `YoutubeExtractor`/`YoutubeExtractorCore` p
 to breaking whenever YouTube changed something server-side (by the time it was replaced, it could no longer
 find muxed streams for most videos at all). `yt-dlp` is maintained specifically to track those changes, which
 per the README roadmap is far less maintenance than reimplementing the same cat-and-mouse game here.
+
+### Key dependency: Velopack (NuGet package + `vpk` CLI tool)
+
+Update checking/downloading/applying (`Services/UpdateService.cs`) and packaging
+(`.github/workflows/release.yml`) both go through [Velopack](https://velopack.io/) (MIT-licensed) — the
+`Velopack` NuGet package in-app, and its `vpk` CLI tool (installed as a `dotnet tool` in CI, not referenced
+by the project itself) for building release packages. See the `update-distribution-strategy` project memory
+for the full comparison against alternatives (a real APT repo/PPA, Snap, etc.) and why Velopack won for
+Windows/macOS while Linux stays AppImage-only for now. Two things about it are load-bearing enough to
+repeat here even though they're also covered where the relevant code lives:
+- `VelopackApp.Build().Run()` must be the literal first line of `Program.Main`, before anything else
+  (`UpdateService`'s notes above explain the verified failure mode if this is ever moved or removed).
+- Its exact C# API (verified in this session via reflection against the real installed 1.2.0 package rather
+  than trusted from docs alone, since a couple of details either weren't in the docs or turned out
+  subtly different — e.g. `ApplyUpdatesAndRestart` takes a `VelopackAsset`, not the `UpdateInfo` itself)
+  is worth re-verifying the same way before making further changes here, rather than assuming docs/memory
+  are exactly right — Velopack is under active development.
