@@ -17,9 +17,12 @@ macOS rather than being tied to Windows Forms.
 
 ## Download
 
-There's no pre-built download yet — packaging is still pending, Ubuntu first (an AppImage or `.deb`), with
-Windows and macOS to follow once that's sorted. Until then, running it from source is the way to use it —
-see "Using it" below.
+There's no pre-built download yet — packaging is still pending, Ubuntu first (a self-updating AppImage),
+with Windows and macOS to follow once that's sorted. Once it's out, it'll be a straight download from this
+repo's [Releases page](https://github.com/developerharon/Yoink/releases) — no separate
+site or account needed — and the app checks for new releases on its own from then on, prompting before it
+downloads or installs anything. Until then, running it from source is the way to use it — see "Using it"
+below.
 
 ## Using it
 
@@ -58,6 +61,8 @@ it's missing.
   downloads at once, or restrict downloading to certain hours (overnight, say).
 - **One settings screen** for all of it — theme, clipboard watching, tray behavior, speed limits,
   concurrency, and scheduling.
+- **Checks for updates on its own** (once installed from a real release, not a source build) — silently,
+  once a day, and always asks before downloading or installing anything.
 
 ## Contributing
 

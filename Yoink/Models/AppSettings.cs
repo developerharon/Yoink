@@ -63,6 +63,13 @@ public class AppSettings
 
     public TimeOnly ScheduleStart { get; set; } = new(22, 0);
     public TimeOnly ScheduleEnd { get; set; } = new(6, 0);
+
+    /// <summary>
+    /// When <see cref="Views.MainWindow"/> last checked <see cref="Services.UpdateService"/> for a
+    /// new release. Null means "never" — always worth checking. Throttles the check to roughly once
+    /// a day rather than hitting GitHub's release feed on every launch.
+    /// </summary>
+    public DateTimeOffset? LastUpdateCheckUtc { get; set; }
 }
 
 /// <summary>

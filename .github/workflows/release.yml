@@ -1,0 +1,136 @@
+name: Release
+
+# Cuts a Velopack release (see the "update-distribution-strategy" project memory / CLAUDE.md's
+# UpdateService notes for the full reasoning) whenever a version tag is pushed — e.g.
+# `git tag v0.1.0 && git push origin v0.1.0`. Nothing here runs on an ordinary push to master.
+#
+# All three platforms are wired up (Velopack is one tool for all of them), but per the agreed
+# rollout plan — Ubuntu first, Windows/macOS later — the windows/macos jobs below are gated off
+# with `if: false` until someone has actually verified a packaged build on real Windows/macOS
+# hardware and prepared proper platform icons (see the TODO comments on each job). Flip that line
+# to enable a platform once it's been checked.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        run: dotnet publish Yoink/Yoink.csproj -c Release -r linux-x64 -o publish --self-contained true
+
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      - name: Download previous release (for delta packages)
+        # Fails on the very first release, since there's nothing previous to diff against yet —
+        # that's expected and fine, vpk pack below still produces a full (non-delta) package.
+        continue-on-error: true
+        run: vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pack (produces the self-updating AppImage)
+        run: >
+          vpk pack -u Yoink -v ${{ steps.version.outputs.version }} -p publish -e Yoink
+          --packTitle Yoink --icon Yoink/Assets/tray-icon.png -r linux-x64
+
+      - name: Upload to GitHub Releases
+        run: >
+          vpk upload github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+          --publish --releaseName "Yoink ${{ steps.version.outputs.version }}" --tag ${{ github.ref_name }}
+
+  release-windows:
+    # TODO: enable once a packaged build has been verified on real Windows hardware, and a proper
+    # .ico (Velopack's Windows packaging may specifically want one, unlike the PNG used below,
+    # which was only verified against Linux packaging) has been prepared from Assets/tray-icon.png.
+    if: false
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        run: dotnet publish Yoink/Yoink.csproj -c Release -r win-x64 -o publish --self-contained true
+
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      - name: Download previous release (for delta packages)
+        continue-on-error: true
+        run: vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pack (produces Setup.exe)
+        run: >
+          vpk pack -u Yoink -v ${{ steps.version.outputs.version }} -p publish -e Yoink.exe
+          --packTitle Yoink --icon Yoink/Assets/tray-icon.png -r win-x64
+
+      - name: Upload to GitHub Releases
+        run: >
+          vpk upload github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+          --publish --releaseName "Yoink ${{ steps.version.outputs.version }}" --tag ${{ github.ref_name }}
+
+  release-macos:
+    # TODO: enable once a packaged build has been verified on real macOS hardware, notarization is
+    # sorted (or explicitly deferred with Gatekeeper warnings accepted — see the
+    # update-distribution-strategy memory: unsigned is the agreed starting point), and a proper
+    # .icns has been prepared from Assets/tray-icon.png.
+    if: false
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        run: dotnet publish Yoink/Yoink.csproj -c Release -r osx-x64 -o publish --self-contained true
+
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      - name: Download previous release (for delta packages)
+        continue-on-error: true
+        run: vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pack (produces a .app bundle)
+        run: >
+          vpk pack -u Yoink -v ${{ steps.version.outputs.version }} -p publish
+          --packTitle Yoink --icon Yoink/Assets/tray-icon.png -r osx-x64
+
+      - name: Upload to GitHub Releases
+        run: >
+          vpk upload github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+          --publish --releaseName "Yoink ${{ steps.version.outputs.version }}" --tag ${{ github.ref_name }}

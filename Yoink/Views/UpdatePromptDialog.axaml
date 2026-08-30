@@ -1,0 +1,26 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Yoink.Views.UpdatePromptDialog"
+        Title="Update available"
+        Icon="/Assets/tray-icon.png"
+        Width="440" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="false">
+
+    <StackPanel Margin="20" Spacing="14">
+        <TextBlock Text="Update available" Classes="SectionTitle" />
+        <TextBlock Name="TxtVersion" TextWrapping="Wrap" />
+
+        <ScrollViewer MaxHeight="220">
+            <TextBlock Name="TxtNotes" Classes="Caption" TextWrapping="Wrap" />
+        </ScrollViewer>
+
+        <ProgressBar Name="ProgressBar" Minimum="0" Maximum="100" IsVisible="False" />
+
+        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+            <Button Name="BtnLater" Content="Later" Click="BtnLater_Click" />
+            <Button Name="BtnInstall" Content="Install Update" Classes="Primary" Click="BtnInstall_Click" />
+        </StackPanel>
+    </StackPanel>
+
+</Window>

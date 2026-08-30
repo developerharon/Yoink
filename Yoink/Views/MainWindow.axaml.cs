@@ -19,6 +19,7 @@ public partial class MainWindow : Window
 {
     private readonly YtDlpClient _ytDlp = new();
     private readonly DownloadQueueService _queue;
+    private readonly UpdateService _updates = new();
     private readonly ObservableCollection<DownloadQueueItem> _items = new();
 
     // Created once the window is attached to a screen (see MainWindow_Opened) — the clipboard
@@ -39,6 +40,27 @@ public partial class MainWindow : Window
 
         _ = LoadQueueAsync();
         _ = WarnIfYtDlpMissingAsync();
+        _ = CheckForUpdatesAsync();
+    }
+
+    /// <summary>
+    /// Silent, throttled to roughly once a day via <see cref="AppSettings.LastUpdateCheckUtc"/>.
+    /// Only ever prompts (<see cref="UpdatePromptDialog"/>) — never downloads or installs anything
+    /// without that explicit click, per the agreed update UX. A no-op for a `dotnet run`/self-built
+    /// copy, since <see cref="UpdateService.IsInstalled"/> is false there.
+    /// </summary>
+    private async Task CheckForUpdatesAsync()
+    {
+        var settings = SettingsService.Load();
+        if (settings.LastUpdateCheckUtc is { } last && DateTimeOffset.UtcNow - last < TimeSpan.FromHours(24))
+            return;
+
+        settings.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
+        SettingsService.Save(settings);
+
+        var updateInfo = await _updates.CheckForUpdatesAsync();
+        if (updateInfo is not null)
+            await UpdatePromptDialog.ShowAsync(this, _updates, updateInfo);
     }
 
     private void MainWindow_Opened(object? sender, EventArgs e)
