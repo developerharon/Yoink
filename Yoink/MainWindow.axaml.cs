@@ -16,6 +16,7 @@ namespace Yoink;
 public partial class MainWindow : Window
 {
     private readonly YoutubeClient _youtube = new();
+    private readonly DownloadEngine _downloadEngine = new();
     private readonly ObservableCollection<DownloadHistoryEntry> _history = new(DownloadHistoryService.Load());
 
     public MainWindow()
@@ -81,6 +82,12 @@ public partial class MainWindow : Window
         {
             BtnDownload.IsEnabled = true;
         }
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _downloadEngine.Dispose();
+        base.OnClosed(e);
     }
 
     private void AddHistoryEntry(DownloadHistoryEntry entry)
@@ -151,7 +158,11 @@ public partial class MainWindow : Window
             LblPercentage.Text = $"{p * 100:0.##}%";
         }));
 
-        await _youtube.Videos.Streams.DownloadAsync(streamInfo, filePath, progress);
+        // Actual byte transfer goes through the core download engine (resumable range
+        // requests, retry-on-failure, cancellation) rather than YoutubeExplode's own
+        // Streams.DownloadAsync — YoutubeExplode is only used above to resolve the direct
+        // stream URL and video metadata.
+        await _downloadEngine.DownloadAsync(new Uri(streamInfo.Url), filePath, progress);
 
         return (video.Title, filePath);
     }
