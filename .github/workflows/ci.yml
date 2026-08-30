@@ -25,3 +25,6 @@ jobs:
 
       - name: Build
         run: dotnet build Yoink.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test Yoink.sln --configuration Release --no-build --logger "console;verbosity=normal"

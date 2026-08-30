@@ -22,8 +22,73 @@ SDK-style project, so the regular `dotnet` CLI works directly — no MSBuild/NuG
 
 - Build: `dotnet build Yoink.sln`
 - Run: `dotnet run --project Yoink`
+- Test: `dotnet test Yoink.sln`
 
-There are no lint or test commands/projects in this repo.
+There is no lint command/config in this repo. `Yoink.Tests` (xUnit v3 — see its own "Key dependency"
+note below for why v3 specifically, not the more commonly-seen v2) is the test project; CI
+(`.github/workflows/ci.yml`) runs it on every push/PR to `master` alongside the build.
+
+## Testing (`Yoink.Tests/`)
+
+A handful of production methods that exist purely as pure/isolable logic (see each one's own doc
+comment) are `internal` rather than `private` specifically so tests can reach them directly —
+`Yoink.csproj` grants `Yoink.Tests` an `InternalsVisibleTo` for exactly this. The whole assembly runs
+sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]` in
+`AssemblyInfo.cs`), since a couple of test classes redirect the static, process-wide
+`SettingsService.SettingsPath` to a temp file for their duration — safe only one at a time.
+
+- `Models/` — `DownloadQueueItemTests` (every `CanPause`/`CanResume`/etc. computed property across
+  all six `DownloadQueueStatus` values), `AppSettingsTests` (fresh-install defaults, the five
+  `AccentColor` presets).
+- `Services/SettingsServiceTests` — save/load round-tripping and the missing-file/corrupt-file
+  fallback-to-defaults behavior, against a redirected `SettingsService.SettingsPath` (never the real
+  user's actual settings.json).
+- `Services/DownloadQueueScheduleTests` — `DownloadQueueService.IsWithinWindow` (same-day and
+  overnight-wrap schedule windows, boundary-inclusive/exclusive edges), `ComputeRateLimitKBps` (every
+  combination of per-download/global caps), `BuildFormatSelector`/`BuildDestinationPath`.
+- `Services/DownloadQueueServiceTests` — real `DownloadQueueService` instances against a temp SQLite
+  file (its constructor already accepts a `databasePath` override, so this needed no production
+  change): Enqueue/GetAll/Reorder/Pause/Resume/Cancel/Retry, plus an end-to-end
+  `EnqueueAndWaitAsync` test that lets the real background loop run against the real (but genuinely
+  absent in this environment and on GitHub's runners) `yt-dlp`, verifying it reaches `Failed` and
+  throws rather than hanging — see the class's own doc comment for why yt-dlp being missing is
+  actually *useful* here rather than a gap. `YtDlpClient` is sealed with no interface, so it can't be
+  faked; the CRUD-focused tests instead close the schedule window (`SchedulingEnabled=true`,
+  `ScheduleStart == ScheduleEnd`, which `IsWithinWindowTests.ZeroWidthWindow_IsNeverWithin` confirms is
+  never "within") so the background loop never dequeues anything mid-test, rather than racing it.
+- `Services/ClipboardWatcherServiceTests` — the real background poll loop (given a fast poll interval)
+  against fake clipboard-read/is-enabled delegates: every recognized YouTube URL shape, negative cases,
+  fires-once-per-change, and respects the enabled/disabled delegate.
+- `Services/YtDlpClientParsingTests` — `ParseVideoInfo`/`ParsePlaylistEntryLine` against sample yt-dlp
+  JSON (no process spawned), `ExtractErrorSummary`, and `TryParseProgressPercent` (pulled out of
+  `DownloadAsync`'s stdout loop, which now calls this rather than duplicating the regex match, so the
+  tested code path is the real one).
+- `Converters/DownloadQueueStatusToBrushConverterTests` — via `[AvaloniaFact]`/`[AvaloniaTheory]` (see
+  `TestAppBuilder.cs`), against the real `App` and its actual `App.axaml` resources.
+- `Branding/AppTests.cs` — `App.ToThemeVariant`'s mapping, and `App.ApplyAccent`'s actual effect on
+  `Application.Current`'s resources for all five `AccentColor` presets (also `[AvaloniaFact]`).
+
+**Known gap, not yet covered**: `Views.MainWindow`/`Views.SettingsView` themselves aren't
+instantiated in tests — `MainWindow`'s constructor has no way to override `DownloadQueueService`'s
+real %AppData%-pointed database path (unlike the service itself, which already takes one), so
+constructing it for real in a test would touch the actual user's queue.db. Extending it with the same
+kind of override `DownloadQueueService` already has is the natural next step if window-level
+interaction tests (e.g. the `FANavigationView` back-button regression from the navigation-shell work)
+are wanted later.
+
+### Key dependency: xUnit v3 (not v2)
+
+`Avalonia.Headless.XUnit` 12.1.1 (used for the `[AvaloniaFact]`/`[AvaloniaTheory]` tests above) only
+ships against `xunit.v3.extensibility.core` — there's no v2-compatible build. `dotnet new xunit` in
+this SDK still scaffolds a v2-shaped project (`xunit`/`xunit.runner.visualstudio` packages,
+VSTest-hosted-in-a-DLL model) by default; mixing that with `Avalonia.Headless.XUnit` produces a
+duplicate-`FactAttribute` compile error (both `xunit.core` v2 and `xunit.v3.core` present at once) and,
+before that's even fixed, a separate "could not find app host executable" runtime failure from the
+VSTest adapter trying to host a v3-shaped test assembly the old way. `Yoink.Tests.csproj` is set up for
+v3 properly instead: the `xunit.v3` package (not `xunit`), plus `<OutputType>Exe</OutputType>` and
+`<UseAppHost>true</UseAppHost>` — v3 runs as a self-contained executable via Microsoft.Testing.Platform,
+not a DLL loaded by a separate host. Confirmed by reproducing both failures against a bare
+`dotnet new xunit` project before fixing them, not assumed from docs.
 
 ## Architecture
 

@@ -1,0 +1,45 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- xUnit v3 (required by Avalonia.Headless.XUnit 12.1.1, which only ships against
+         xunit.v3.extensibility.core) runs as a self-contained test executable via Microsoft.Testing
+         Platform, not the older VSTest-adapter-hosted-in-a-dll model xUnit v2 used. -->
+    <OutputType>Exe</OutputType>
+    <UseAppHost>true</UseAppHost>
+    <!-- xUnit1051 wants every async test to thread TestContext.Current.CancellationToken through —
+         real advice for slow/long-running suites, but not worth it here: these tests are all fast
+         and self-contained, and the token would only ever plumb through to make tests cancel faster
+         mid-run, never affect correctness. -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Same Avalonia/FluentAvaloniaUI versions as Yoink.csproj — Avalonia.Headless.XUnit gives the
+         [AvaloniaFact] tests (App.ApplyAccent, DownloadQueueStatusToBrushConverter) a real, offscreen
+         Application built from Yoink's own App class, so they exercise actual resource resolution
+         rather than a hand-rolled stand-in. -->
+    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Headless" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.1" />
+    <PackageReference Include="FluentAvaloniaUI" Version="3.1.0" />
+    <PackageReference Include="Velopack" Version="1.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Yoink\Yoink.csproj" />
+  </ItemGroup>
+
+</Project>

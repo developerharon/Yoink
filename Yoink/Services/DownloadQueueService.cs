@@ -262,9 +262,10 @@ public sealed class DownloadQueueService : IDisposable
 
     /// <summary>
     /// Split out from <see cref="IsWithinSchedule"/> as a pure function of an explicit "now" purely
-    /// so it's independently testable without needing to control the system clock.
+    /// so it's independently testable without needing to control the system clock. Internal (rather
+    /// than private) for exactly that reason — see Yoink.Tests' DownloadQueueScheduleTests.
     /// </summary>
-    private static bool IsWithinWindow(TimeOnly now, TimeOnly start, TimeOnly end) =>
+    internal static bool IsWithinWindow(TimeOnly now, TimeOnly start, TimeOnly end) =>
         start <= end
             ? now >= start && now < end // same-day window, e.g. 09:00-17:00
             : now >= start || now < end; // wraps past midnight, e.g. 22:00-06:00
@@ -273,8 +274,9 @@ public sealed class DownloadQueueService : IDisposable
     /// The smaller of the per-download cap and this download's share of the global cap (global ÷
     /// MaxConcurrentDownloads) — see <see cref="AppSettings.GlobalSpeedLimitKBps"/> for why it's a
     /// static split rather than a live rebalance. Null (unlimited) only when neither is set.
+    /// Internal (not private) so Yoink.Tests can exercise it directly.
     /// </summary>
-    private static int? ComputeRateLimitKBps(AppSettings settings)
+    internal static int? ComputeRateLimitKBps(AppSettings settings)
     {
         int? perDownload = settings.PerDownloadSpeedLimitKBps is > 0 ? settings.PerDownloadSpeedLimitKBps : null;
         int? globalShare = settings.GlobalSpeedLimitKBps is > 0
@@ -365,10 +367,11 @@ public sealed class DownloadQueueService : IDisposable
             tcs.TrySetResult(item);
     }
 
-    private static string BuildFormatSelector(int resolution) =>
+    // internal (not private) so Yoink.Tests can exercise these two directly.
+    internal static string BuildFormatSelector(int resolution) =>
         $"bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/best";
 
-    private static string BuildDestinationPath(string title)
+    internal static string BuildDestinationPath(string title)
     {
         var fileName = string.Concat(title.Split(Path.GetInvalidFileNameChars())) + ".mp4";
         return Path.Combine(AppContext.BaseDirectory, fileName);
