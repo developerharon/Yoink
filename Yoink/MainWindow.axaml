@@ -1,0 +1,36 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Yoink.MainWindow"
+        Title="Yoink"
+        Width="560" Height="220"
+        CanResize="false">
+
+    <StackPanel Margin="16" Spacing="12">
+
+        <DockPanel>
+            <TextBlock Text="URL:" Width="60" VerticalAlignment="Center" />
+            <TextBox Name="TxtUrl" PlaceholderText="https://www.youtube.com/watch?v=..." />
+        </DockPanel>
+
+        <DockPanel>
+            <ProgressBar Name="ProgressBar" Minimum="0" Maximum="100" Height="21"
+                         DockPanel.Dock="Left" Width="440" />
+            <TextBlock Name="LblPercentage" Text="0%" Margin="8,0,0,0" VerticalAlignment="Center" />
+        </DockPanel>
+
+        <DockPanel>
+            <TextBlock Text="Resolution:" Width="80" VerticalAlignment="Center" />
+            <ComboBox Name="CboResolution" Width="100" SelectedIndex="0">
+                <ComboBoxItem>360</ComboBoxItem>
+                <ComboBoxItem>480</ComboBoxItem>
+                <ComboBoxItem>720</ComboBoxItem>
+                <ComboBoxItem>1080</ComboBoxItem>
+                <ComboBoxItem>1440</ComboBoxItem>
+            </ComboBox>
+            <Button Name="BtnDownload" Content="Download" HorizontalAlignment="Right"
+                    Click="BtnDownload_Click" />
+        </DockPanel>
+
+    </StackPanel>
+
+</Window>

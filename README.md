@@ -1,15 +1,23 @@
-This project started as a part of my quest to get get a free, open source youtube playlist video downloader, but I guess as much as I kept working on it, I wanted it to be more, a general download manager.
+# Yoink
 
-To use it:
-Download the project and run it on visual studio, preferable version 2015 and above.
-Paste the youtube link you want to download the video from
-click on download.
+A free, open source download manager. It started as a YouTube playlist downloader; the goal now is a
+general-purpose download manager that runs anywhere .NET runs — Linux included.
 
-To contribute to the project: 
-You can clone it and improve it
-You can create a new branch and also work on it
-Or any other way that contributes to it 
+Built with [Avalonia](https://avaloniaui.net/) on .NET 10, so it's cross-platform (Linux, macOS, Windows)
+rather than tied to Windows Forms.
 
-This is just a version 1.0.0 which will download only one video at a time. I intend to publish version 2.0.0 which will be able to download the whole youtube playlist of videos and a version 3.0.0 which will be a general download manager for all your downloads. A completely free, open source download manager that you can use for all your downloads. 
+## Using it
 
-Please comment and contribute to the project, I don't know if i can qualify to call myself a beginner or an intermediate programmer because I am definetly not a pro lol.. 
+1. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download).
+2. Clone the repo.
+3. Run it:
+   ```
+   dotnet run --project Yoink
+   ```
+4. Paste the YouTube video URL, pick a resolution, click Download.
+
+## Contributing
+
+You can clone it and improve it, create a new branch and work on it, or contribute in any other way.
+
+Please comment and contribute to the project — I'm definitely not a pro, lol.

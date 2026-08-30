@@ -1,0 +1,14 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Yoink.MessageBoxWindow"
+        Width="360" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="false"
+        ShowInTaskbar="false">
+
+    <StackPanel Margin="20" Spacing="16">
+        <TextBlock Name="MessageText" TextWrapping="Wrap" />
+        <Button Name="OkButton" Content="OK" HorizontalAlignment="Right" Click="OkButton_Click" />
+    </StackPanel>
+
+</Window>
