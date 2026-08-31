@@ -174,6 +174,27 @@
             <Setter Property="Stroke" Value="White" />
         </Style>
 
+        <!-- Views.MainWindow's own back button (BtnBack, inside PaneCustomContent) — not
+             FANavigationView's built-in one: IsBackButtonVisible/IsBackEnabled never actually release
+             the layout space Top mode reserves once shown once (verified via a throwaway headless
+             harness — the icon+wordmark stayed shifted right after going back to Downloads), so this
+             app draws and sizes its own instead, reusing Path.CaptionGlyph for the chevron. Round
+             rather than CaptionButton's flush rectangle — this one sits inline with the icon/wordmark,
+             not flush against a window corner, so there's no reason to match the OS caption-button
+             convention here. -->
+        <Style Selector="Button.NavBackButton">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Button.NavBackButton:pointerover">
+            <Setter Property="Background" Value="{DynamicResource BorderBrush2}" />
+        </Style>
+
         <!-- The reusable mark next to "Yoink" in Views.MainWindow's header — see YoinkMarkGeometry
              above. Stroke is left unset here (each usage picks AccentBrush, OnAccentBrush, etc.
              depending on what it's sitting on) — only the shape/behavior is shared. -->

@@ -64,10 +64,10 @@
     <!-- The app shell: a top nav bar (icon+wordmark, plus FluentAvalonia's built-in Settings entry —
          no menu item for Downloads, since that's the home/dashboard, not something you navigate to)
          over a body that swaps between DownloadsBody and SettingsBody — see
-         NavView_SelectionChanged/NavView_BackRequested in the code-behind. Settings used to be a
-         separate modal Window; it's a page in this same shell now, with the nav bar's own back
-         button as the way out (shown only while on that page — Downloads has nowhere to go "back"
-         from), so it actually feels like part of the app.
+         NavView_SelectionChanged/BtnBack_Click in the code-behind. Settings used to be a separate
+         modal Window; it's a page in this same shell now, with BtnBack as the way out (shown only
+         while on that page — Downloads has nowhere to go "back" from), so it actually feels like
+         part of the app.
 
          This same top row also doubles as the window's own title bar now that there's no OS-drawn one
          at all — see MainWindow_Opened in the code-behind for how NavView's own Margin reserves space
@@ -76,9 +76,6 @@
     <ui:FANavigationView x:Name="NavView" Grid.Row="0"
                          PaneDisplayMode="Top"
                          IsSettingsVisible="True"
-                         IsBackButtonVisible="False"
-                         IsBackEnabled="False"
-                         BackRequested="NavView_BackRequested"
                          SelectionChanged="NavView_SelectionChanged">
 
         <!-- NOT PaneHeader — verified (via a headless-rendered frame, not guesswork) that
@@ -96,6 +93,18 @@
                         Background="Transparent"
                         chrome:WindowDecorationProperties.ElementRole="TitleBar"
                         PointerPressed="TitleBarDragHandle_PointerPressed">
+                <!-- Our own back button, not NavView's built-in one (IsBackButtonVisible/IsBackEnabled,
+                     removed above) — verified via a throwaway headless harness against the real
+                     MainWindow that toggling those off never actually releases the layout space Top
+                     mode reserves for the built-in button once it's shown once: the icon+wordmark
+                     stayed shifted right by the button's width even after going back to Downloads,
+                     reproducing exactly what got reported. A Button we place and size ourselves inside
+                     PaneCustomContent, IsVisible-toggled in code the same way DownloadsBody/SettingsBody
+                     already are, doesn't touch that broken reservation at all. -->
+                <Button Name="BtnBack" Classes="NavBackButton" IsVisible="False" Click="BtnBack_Click"
+                        ToolTip.Tip="Back">
+                    <Path Classes="CaptionGlyph" Data="M 6.5,1 L 2,5 L 6.5,9" />
+                </Button>
                 <Path Classes="YoinkMark" Width="22" Height="22" StrokeThickness="2"
                       Stroke="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
                 <TextBlock Text="Yoink" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />

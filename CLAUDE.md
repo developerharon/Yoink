@@ -128,13 +128,22 @@ project root — that's exactly the flat structure this reorg moved away from.
   "outside the app" no matter how it was styled). `NavView_SelectionChanged` reads `e.IsSettingsSelected`
   (true only when that built-in entry is picked, since there's nothing else to select) and swaps which of
   `DownloadsBody`/`SettingsBody` (two overlaid children of one `Grid`, toggled via `IsVisible` — not a
-  `Frame`/page navigation stack, since there are only ever these two pages) is showing, revealing the nav
-  bar's own back button (`IsBackButtonVisible`/`IsBackEnabled`, both otherwise `False` — the back button
-  only exists at all while on Settings, since Downloads has nowhere to go "back" from) at the same time;
-  `NavView_BackRequested` reverses both, hides the back button again, and clears `SelectedItem` to
-  un-highlight the Settings entry (there's no "Downloads" item to select instead). Neither page needs
-  anything handed back when the other is shown — every setting is read fresh at the point it's needed
-  regardless of which page is currently visible (see `SettingsView` below).
+  `Frame`/page navigation stack, since there are only ever these two pages) is showing, revealing `BtnBack`
+  (inside `PaneCustomContent`, `IsVisible` otherwise `False` — it only exists at all while on Settings,
+  since Downloads has nowhere to go "back" from) at the same time; `BtnBack_Click` reverses both, hides
+  the button again, and clears `SelectedItem` to un-highlight the Settings entry (there's no "Downloads"
+  item to select instead). `BtnBack` is a small hand-drawn `Button` this app owns (`Button.NavBackButton`
+  in `App.axaml`, a `Path.CaptionGlyph` chevron for the arrow), **not**
+  `FANavigationView.IsBackButtonVisible`/`IsBackEnabled` — that was the original implementation, and it
+  has a real bug in FluentAvaloniaUI 3.1.0's Top-mode template, found the same way as this file's other
+  FluentAvaloniaUI gotchas (a real screenshot after shipping, then reproduced headless before fixing):
+  toggling those two properties back off after showing the built-in back button once does **not**
+  release the pane-row layout space it reserved — the icon+wordmark stayed shifted right by the
+  button's width permanently, even back on Downloads. Owning the button (`IsVisible`-toggled exactly
+  like `DownloadsBody`/`SettingsBody` already are) sidesteps that reservation entirely rather than
+  fighting it. Neither page needs anything handed back when the other is shown — every setting is read
+  fresh at the point it's needed regardless of which page is currently visible (see `SettingsView`
+  below).
   - **This same top row doubles as the window's own title bar**, rather than sitting below a separate
     native one — via `WindowDecorations="None"` (fully custom chrome, this app draws literally
     everything), **not** the cooperative `ExtendClientAreaToDecorationsHint` this used at first. That
