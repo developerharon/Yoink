@@ -33,6 +33,7 @@ public partial class AddDownloadDialog : Window
         if (!string.IsNullOrEmpty(prefillUrl))
         {
             dialog.Title = "Download detected";
+            dialog.TitleBar.Title = "Download detected";
             dialog.TxtUrl.Text = prefillUrl;
         }
 

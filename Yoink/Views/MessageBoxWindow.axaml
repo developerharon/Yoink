@@ -1,14 +1,27 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="using:Yoink.Views"
         x:Class="Yoink.Views.MessageBoxWindow"
         Width="360" SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
-        CanResize="false"
-        ShowInTaskbar="false">
+        CanResize="False"
+        ShowInTaskbar="False"
+        WindowDecorations="None">
 
-    <StackPanel Margin="20" Spacing="16">
-        <TextBlock Name="MessageText" TextWrapping="Wrap" />
-        <Button Name="OkButton" Content="OK" Classes="Primary" HorizontalAlignment="Right" Click="OkButton_Click" />
-    </StackPanel>
+    <!-- Same custom chrome as AddDownloadDialog/UpdatePromptDialog (see AddDownloadDialog.axaml's
+         comment) — DialogTitleBar's title text is set from ShowAsync's title parameter, same as
+         Window.Title always was. -->
+    <Panel>
+        <Border Margin="4" BorderBrush="{DynamicResource BorderBrush2}" BorderThickness="1" IsHitTestVisible="False" />
+
+        <Grid Margin="4" RowDefinitions="Auto,*">
+            <views:DialogTitleBar Grid.Row="0" Name="TitleBar" />
+
+            <StackPanel Grid.Row="1" Margin="20,0,20,20" Spacing="16">
+                <TextBlock Name="MessageText" TextWrapping="Wrap" />
+                <Button Name="OkButton" Content="OK" Classes="Primary" HorizontalAlignment="Right" Click="OkButton_Click" />
+            </StackPanel>
+        </Grid>
+    </Panel>
 
 </Window>

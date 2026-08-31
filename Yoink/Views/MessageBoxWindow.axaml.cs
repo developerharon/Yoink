@@ -17,6 +17,7 @@ public partial class MessageBoxWindow : Window
     public static Task ShowAsync(Window owner, string message, string title)
     {
         var window = new MessageBoxWindow { Title = title };
+        window.TitleBar.Title = title;
         window.MessageText.Text = message;
         return window.ShowDialog(owner);
     }
