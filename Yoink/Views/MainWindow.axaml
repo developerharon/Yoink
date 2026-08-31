@@ -181,6 +181,8 @@
                                             </Grid>
                                             <ProgressBar Minimum="0" Maximum="100" Value="{Binding ProgressPercent, Mode=OneWay}"
                                                          IsVisible="{Binding ShowProgress}" />
+                                            <TextBlock Text="{Binding SizeText}" Classes="Caption" FontSize="11"
+                                                       HorizontalAlignment="Right" IsVisible="{Binding ShowSize}" />
                                         </StackPanel>
                                     </Border>
                                 </DataTemplate>

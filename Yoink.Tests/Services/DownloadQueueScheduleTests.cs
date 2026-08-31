@@ -119,11 +119,19 @@ public class BuildHelpersTests
     }
 
     [Fact]
-    public void BuildDestinationPath_AlwaysEndsWithMp4()
+    public void BuildDestinationPath_DefaultsToMp4()
     {
         var path = DownloadQueueService.BuildDestinationPath("My Video", System.IO.Path.GetTempPath());
 
         Assert.EndsWith(".mp4", path);
+    }
+
+    [Fact]
+    public void BuildDestinationPath_UsesGivenContainerFormat()
+    {
+        var path = DownloadQueueService.BuildDestinationPath("My Video", System.IO.Path.GetTempPath(), "mkv");
+
+        Assert.EndsWith(".mkv", path);
     }
 
     [Fact]

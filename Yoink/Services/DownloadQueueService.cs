@@ -99,7 +99,21 @@ public sealed class DownloadQueueService : IDisposable
             return (IReadOnlyList<DownloadQueueItem>)items;
         }, cancellationToken);
 
-    public async Task<DownloadQueueItem> EnqueueAsync(string url, int resolution, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// <paramref name="title"/> is optional — leave it blank and <see cref="ProcessItemAsync"/>
+    /// resolves it itself via <see cref="YtDlpClient.GetVideoInfoAsync"/> once this item is
+    /// actually picked up, same as before this parameter existed. Passing an already-resolved
+    /// title (as <c>Views.AddDownloadDialog</c> does once it's fetched video info to build its own
+    /// resolution/format picker) skips that redundant second yt-dlp call entirely, so the actual
+    /// download starts the moment this item is dequeued instead of pausing to look the title up
+    /// again first.
+    /// </summary>
+    public async Task<DownloadQueueItem> EnqueueAsync(
+        string url,
+        int resolution,
+        string title = "",
+        string containerFormat = "mp4",
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("A URL is required.", nameof(url));
@@ -108,13 +122,15 @@ public sealed class DownloadQueueService : IDisposable
         {
             await using var command = _connection.CreateCommand();
             command.CommandText = """
-                INSERT INTO download_queue (Url, Title, Resolution, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt)
-                VALUES ($url, '', $resolution, NULL, $status, 0, NULL,
+                INSERT INTO download_queue (Url, Title, Resolution, ContainerFormat, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt)
+                VALUES ($url, $title, $resolution, $containerFormat, NULL, $status, 0, NULL,
                         (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$url", url);
+            command.Parameters.AddWithValue("$title", title);
             command.Parameters.AddWithValue("$resolution", resolution);
+            command.Parameters.AddWithValue("$containerFormat", containerFormat);
             command.Parameters.AddWithValue("$status", DownloadQueueStatus.Pending.ToString());
             command.Parameters.AddWithValue("$createdAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture));
 
@@ -125,7 +141,9 @@ public sealed class DownloadQueueService : IDisposable
         {
             Id = id,
             Url = url,
+            Title = title,
             Resolution = resolution,
+            ContainerFormat = containerFormat,
             Status = DownloadQueueStatus.Pending,
             CreatedAt = DateTimeOffset.Now
         };
@@ -167,7 +185,7 @@ public sealed class DownloadQueueService : IDisposable
     /// <summary>Enqueues a download and awaits its outcome in one call — see <see cref="WaitForCompletionAsync"/>.</summary>
     public async Task<DownloadQueueItem> EnqueueAndWaitAsync(string url, int resolution, CancellationToken cancellationToken = default)
     {
-        var item = await EnqueueAsync(url, resolution, cancellationToken).ConfigureAwait(false);
+        var item = await EnqueueAsync(url, resolution, cancellationToken: cancellationToken).ConfigureAwait(false);
         return await WaitForCompletionAsync(item.Id, cancellationToken).ConfigureAwait(false);
     }
 
@@ -328,12 +346,14 @@ public sealed class DownloadQueueService : IDisposable
             // settings could have changed since.
             var settings = SettingsService.Load();
 
-            item.FilePath ??= BuildDestinationPath(item.Title, ResolveDownloadFolder(settings));
+            item.FilePath ??= BuildDestinationPath(item.Title, ResolveDownloadFolder(settings), item.ContainerFormat);
 
             var selector = BuildFormatSelector(item.Resolution);
-            var progress = new Progress<double>(p =>
+            var progress = new Progress<YtDlpDownloadProgress>(p =>
             {
-                item.Progress = p;
+                item.Progress = p.Fraction;
+                item.DownloadedBytes = p.BytesDownloaded;
+                item.TotalBytes = p.TotalBytes;
                 RaiseChanged(item);
             });
 
@@ -345,6 +365,7 @@ public sealed class DownloadQueueService : IDisposable
                 item.FilePath,
                 expectedSegmentCount: 2,
                 rateLimitKBps: rateLimitKBps,
+                containerFormat: item.ContainerFormat,
                 progress: progress,
                 cancellationToken: itemCts.Token).ConfigureAwait(false);
 
@@ -389,9 +410,9 @@ public sealed class DownloadQueueService : IDisposable
     internal static string BuildFormatSelector(int resolution) =>
         $"bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/best";
 
-    internal static string BuildDestinationPath(string title, string downloadFolder)
+    internal static string BuildDestinationPath(string title, string downloadFolder, string containerFormat = "mp4")
     {
-        var fileName = string.Concat(title.Split(Path.GetInvalidFileNameChars())) + ".mp4";
+        var fileName = string.Concat(title.Split(Path.GetInvalidFileNameChars())) + "." + containerFormat;
         return Path.Combine(downloadFolder, fileName);
     }
 
@@ -493,14 +514,14 @@ public sealed class DownloadQueueService : IDisposable
     /// not nine per row.
     /// </summary>
     private readonly record struct ColumnOrdinals(
-        int Id, int Url, int Title, int Resolution, int FilePath,
+        int Id, int Url, int Title, int Resolution, int ContainerFormat, int FilePath,
         int Status, int Progress, int ErrorMessage, int Position, int CreatedAt)
     {
         public static ColumnOrdinals FromReader(SqliteDataReader reader) => new(
             reader.GetOrdinal("Id"), reader.GetOrdinal("Url"), reader.GetOrdinal("Title"),
-            reader.GetOrdinal("Resolution"), reader.GetOrdinal("FilePath"), reader.GetOrdinal("Status"),
-            reader.GetOrdinal("Progress"), reader.GetOrdinal("ErrorMessage"), reader.GetOrdinal("Position"),
-            reader.GetOrdinal("CreatedAt"));
+            reader.GetOrdinal("Resolution"), reader.GetOrdinal("ContainerFormat"), reader.GetOrdinal("FilePath"),
+            reader.GetOrdinal("Status"), reader.GetOrdinal("Progress"), reader.GetOrdinal("ErrorMessage"),
+            reader.GetOrdinal("Position"), reader.GetOrdinal("CreatedAt"));
     }
 
     private static DownloadQueueItem ReadItem(SqliteDataReader reader) => ReadItem(reader, ColumnOrdinals.FromReader(reader));
@@ -511,6 +532,7 @@ public sealed class DownloadQueueService : IDisposable
         Url = reader.GetString(o.Url),
         Title = reader.GetString(o.Title),
         Resolution = reader.GetInt32(o.Resolution),
+        ContainerFormat = reader.GetString(o.ContainerFormat),
         FilePath = reader.IsDBNull(o.FilePath) ? null : reader.GetString(o.FilePath),
         Status = Enum.Parse<DownloadQueueStatus>(reader.GetString(o.Status)),
         Progress = reader.GetDouble(o.Progress),
@@ -526,22 +548,46 @@ public sealed class DownloadQueueService : IDisposable
     /// </summary>
     private void EnsureSchema()
     {
-        using var command = _connection.CreateCommand();
-        command.CommandText = """
-            CREATE TABLE IF NOT EXISTS download_queue (
-                Id INTEGER PRIMARY KEY AUTOINCREMENT,
-                Url TEXT NOT NULL,
-                Title TEXT NOT NULL,
-                Resolution INTEGER NOT NULL,
-                FilePath TEXT,
-                Status TEXT NOT NULL,
-                Progress REAL NOT NULL,
-                ErrorMessage TEXT,
-                Position INTEGER NOT NULL,
-                CreatedAt TEXT NOT NULL
-            );
-            """;
-        command.ExecuteNonQuery();
+        using (var command = _connection.CreateCommand())
+        {
+            command.CommandText = """
+                CREATE TABLE IF NOT EXISTS download_queue (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Url TEXT NOT NULL,
+                    Title TEXT NOT NULL,
+                    Resolution INTEGER NOT NULL,
+                    FilePath TEXT,
+                    Status TEXT NOT NULL,
+                    Progress REAL NOT NULL,
+                    ErrorMessage TEXT,
+                    Position INTEGER NOT NULL,
+                    CreatedAt TEXT NOT NULL
+                );
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        // Added after the table above already shipped, so existing installs' queue.db needs a
+        // real migration rather than just being part of the CREATE TABLE — guarded on the column
+        // not already existing, since ALTER TABLE ADD COLUMN has no IF NOT EXISTS form in SQLite
+        // and errors on a second run otherwise. Defaults every pre-existing row to "mp4", matching
+        // this app's previous hardcoded behavior exactly.
+        EnsureColumnExists("ContainerFormat", "TEXT NOT NULL DEFAULT 'mp4'");
+    }
+
+    private void EnsureColumnExists(string columnName, string columnDefinitionSql)
+    {
+        using (var checkCommand = _connection.CreateCommand())
+        {
+            checkCommand.CommandText = "SELECT COUNT(*) FROM pragma_table_info('download_queue') WHERE name = $name";
+            checkCommand.Parameters.AddWithValue("$name", columnName);
+            if ((long)checkCommand.ExecuteScalar()! > 0)
+                return;
+        }
+
+        using var alterCommand = _connection.CreateCommand();
+        alterCommand.CommandText = $"ALTER TABLE download_queue ADD COLUMN {columnName} {columnDefinitionSql}";
+        alterCommand.ExecuteNonQuery();
     }
 
     /// <summary>

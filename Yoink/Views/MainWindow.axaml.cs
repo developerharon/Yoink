@@ -251,7 +251,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void OnClipboardUrlDetected(string url)
     {
-        Dispatcher.UIThread.Post(() => _ = AddDownloadDialog.ShowAsync(this, _queue, url));
+        Dispatcher.UIThread.Post(() => _ = AddDownloadDialog.ShowAsync(this, _queue, _ytDlp, url));
     }
 
     private async Task LoadQueueAsync()
@@ -394,7 +394,7 @@ public partial class MainWindow : Window
 
     private async void BtnAddDownload_Click(object? sender, RoutedEventArgs e)
     {
-        await AddDownloadDialog.ShowAsync(this, _queue);
+        await AddDownloadDialog.ShowAsync(this, _queue, _ytDlp);
     }
 
     private async void BtnPause_Click(object? sender, RoutedEventArgs e) => await RunItemActionAsync(sender, _queue.PauseAsync);

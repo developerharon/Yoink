@@ -42,6 +42,18 @@ public sealed record YtDlpVideoInfo(
 public sealed record YtDlpPlaylistEntry(string Id, string Title, string Url);
 
 /// <summary>
+/// One progress update from <see cref="YtDlpClient.DownloadAsync"/>: <paramref name="Fraction"/> is
+/// the same overall 0.0-1.0 value this always reported; <paramref name="BytesDownloaded"/>/
+/// <paramref name="TotalBytes"/> are null until yt-dlp has printed a progress line with a size on it
+/// (near-instant in practice, but genuinely absent for some live/fragmented streams). For a
+/// multi-stream selector (video+audio), <paramref name="TotalBytes"/> only reflects the streams
+/// seen *so far* — it grows once a later stream's own size becomes known, rather than showing the
+/// full combined size from the very first line — see <c>DrainStdOutForProgressAsync</c>'s own
+/// comment for why that's an accepted trade-off, not a bug.
+/// </summary>
+public readonly record struct YtDlpDownloadProgress(double Fraction, long? BytesDownloaded, long? TotalBytes);
+
+/// <summary>
 /// The YouTube extraction layer (README roadmap step 2): everything that talks to YouTube itself
 /// — resolving a video's direct info, expanding a playlist into its videos, listing available
 /// formats, and downloading + merging audio/video into one file — goes through the `yt-dlp`
@@ -62,6 +74,14 @@ public sealed class YtDlpClient
     private const string ExecutableName = "yt-dlp";
 
     private static readonly Regex ProgressLineRegex = new(@"\[download\]\s+([\d.]+)%", RegexOptions.Compiled);
+
+    // Matches yt-dlp's own "of <size><unit>" token on the same progress line, e.g.
+    // "[download]  42.5% of  218.53KiB at 1.38MiB/s ETA 00:00" or "[download] 100% of  218.53KiB
+    // in 00:00:00 at ...". Confirmed against a real `yt-dlp --newline` run rather than assumed —
+    // see the "download-progress-size" project memory for the actual captured output. The
+    // optional "~" appears when yt-dlp only has an estimated size (a live/fragmented stream).
+    private static readonly Regex ProgressSizeRegex = new(
+        @"\[download\]\s+[\d.]+%\s+of\s+~?\s*([\d.]+)(KiB|MiB|GiB|TiB|B)\b", RegexOptions.Compiled);
 
     // Defaults to a bare PATH lookup, exactly like before dependency provisioning existed — every
     // Yoink.Tests use of this class (the parsing tests) never calls UseResolvedPaths and keeps
@@ -96,6 +116,32 @@ public sealed class YtDlpClient
 
         percent = 0;
         return false;
+    }
+
+    /// <summary>
+    /// The stream's total size (in bytes) off the same progress line <see cref="TryParseProgressPercent"/>
+    /// reads the percent from, or null when the line has no size on it at all (yt-dlp genuinely
+    /// doesn't always know one up front). Internal (not private) so Yoink.Tests can exercise it
+    /// directly, same reasoning as <see cref="TryParseProgressPercent"/>.
+    /// </summary>
+    internal static long? TryParseTotalBytes(string line)
+    {
+        var match = ProgressSizeRegex.Match(line);
+        if (!match.Success ||
+            !double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            return null;
+
+        var multiplier = match.Groups[2].Value switch
+        {
+            "B" => 1L,
+            "KiB" => 1024L,
+            "MiB" => 1024L * 1024,
+            "GiB" => 1024L * 1024 * 1024,
+            "TiB" => 1024L * 1024 * 1024 * 1024,
+            _ => 1L
+        };
+
+        return (long)(value * multiplier);
     }
 
     /// <summary>
@@ -191,13 +237,21 @@ public sealed class YtDlpClient
     /// combining a per-download and a global setting into this single value is the caller's job (see
     /// <c>DownloadQueueService</c>).
     /// </param>
+    /// <param name="containerFormat">
+    /// yt-dlp's own `--merge-output-format` value ("mp4" or "mkv") — must match
+    /// <paramref name="destinationPath"/>'s own extension, since yt-dlp names its merged output
+    /// after the destination it was given regardless of this flag; this only controls which muxer
+    /// it actually uses. Defaults to "mp4" to match this method's behavior before the option
+    /// existed.
+    /// </param>
     public async Task DownloadAsync(
         string url,
         string formatSelector,
         string destinationPath,
         int expectedSegmentCount = 1,
         int? rateLimitKBps = null,
-        IProgress<double>? progress = null,
+        string containerFormat = "mp4",
+        IProgress<YtDlpDownloadProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         var directory = Path.GetDirectoryName(destinationPath);
@@ -207,7 +261,7 @@ public sealed class YtDlpClient
         var arguments = new List<string>
         {
             "-f", formatSelector,
-            "--merge-output-format", "mp4",
+            "--merge-output-format", containerFormat,
             "--newline",
             "--no-mtime",
             "-o", destinationPath,
@@ -237,31 +291,7 @@ public sealed class YtDlpClient
 
         var stderr = new StringBuilder();
         var stderrTask = DrainAsync(process.StandardError, stderr, cancellationToken);
-
-        var totalFiles = Math.Max(expectedSegmentCount, 1);
-        var fileIndex = 0;
-        var seenFirstDestination = false;
-
-        string? line;
-        while ((line = await process.StandardOutput.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
-        {
-            if (line.StartsWith("[download] Destination:", StringComparison.Ordinal) ||
-                line.StartsWith("[download] Resuming download", StringComparison.Ordinal))
-            {
-                // Each new "Destination"/"Resuming" line marks the start of the next stream
-                // (video, then audio) — everything before it is done, so bump the file index.
-                if (seenFirstDestination)
-                    fileIndex = Math.Min(fileIndex + 1, totalFiles - 1);
-                seenFirstDestination = true;
-                continue;
-            }
-
-            if (TryParseProgressPercent(line, out var percent))
-            {
-                var overall = (fileIndex + percent / 100.0) / totalFiles;
-                progress?.Report(Math.Clamp(overall, 0.0, 1.0));
-            }
-        }
+        var stdoutTask = DrainStdOutForProgressAsync(process.StandardOutput, expectedSegmentCount, progress, cancellationToken);
 
         try
         {
@@ -273,12 +303,86 @@ public sealed class YtDlpClient
             throw;
         }
 
-        await stderrTask.ConfigureAwait(false);
+        // yt-dlp itself exiting is what actually determines success/failure — don't keep
+        // blocking on the stdout/stderr pipes reaching EOF past this point. yt-dlp's merge step
+        // spawns ffmpeg as a child, which inherits those same redirected handles; if anything
+        // about it lingers even briefly past yt-dlp's own exit (observed in practice — a
+        // download whose final file was already complete on disk still sat "Active" forever),
+        // the pipe's write end stays open and ReadLineAsync/DrainAsync would otherwise wait for
+        // an EOF that never comes. A short grace period still lets an already-finished drain
+        // collect whatever's left in the buffer without reintroducing that hang.
+        await Task.WhenAny(Task.WhenAll(stdoutTask, stderrTask), Task.Delay(TimeSpan.FromSeconds(2)))
+            .ConfigureAwait(false);
 
         if (process.ExitCode != 0)
             throw new InvalidOperationException($"yt-dlp failed: {ExtractErrorSummary(stderr.ToString())}");
 
-        progress?.Report(1.0);
+        // The Completed status this leads to in DownloadQueueService hides progress/size display
+        // entirely (see DownloadQueueItem.ShowProgress), so there's no need to preserve the last
+        // known byte counts here — a bare 100% is enough for whatever briefly reads this.
+        progress?.Report(new YtDlpDownloadProgress(1.0, null, null));
+    }
+
+    /// <summary>
+    /// Parses yt-dlp's `--newline`d stdout for progress, run as its own background task (like
+    /// <see cref="DrainAsync"/> already drains stderr) rather than a loop <see cref="DownloadAsync"/>
+    /// blocks on directly — see that method's comment on why blocking on this reaching EOF was the
+    /// actual bug being fixed.
+    /// </summary>
+    private static async Task DrainStdOutForProgressAsync(
+        StreamReader reader,
+        int expectedSegmentCount,
+        IProgress<YtDlpDownloadProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var totalFiles = Math.Max(expectedSegmentCount, 1);
+        var fileIndex = 0;
+        var seenFirstDestination = false;
+
+        // Bytes already fully accounted for by streams earlier than the one currently downloading
+        // (added in once a later stream's own "Destination"/"Resuming" line shows up, since that's
+        // when the earlier stream's own total is final) — see YtDlpDownloadProgress's doc comment
+        // for why the running total only grows as later streams start, rather than reflecting the
+        // full combined size from the very first line.
+        long completedStreamsBytes = 0;
+        long? currentStreamTotalBytes = null;
+
+        string? line;
+        while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+        {
+            if (line.StartsWith("[download] Destination:", StringComparison.Ordinal) ||
+                line.StartsWith("[download] Resuming download", StringComparison.Ordinal))
+            {
+                // Each new "Destination"/"Resuming" line marks the start of the next stream
+                // (video, then audio) — everything before it is done, so bump the file index.
+                if (seenFirstDestination)
+                {
+                    fileIndex = Math.Min(fileIndex + 1, totalFiles - 1);
+                    completedStreamsBytes += currentStreamTotalBytes ?? 0;
+                    currentStreamTotalBytes = null;
+                }
+                seenFirstDestination = true;
+                continue;
+            }
+
+            if (TryParseProgressPercent(line, out var percent))
+            {
+                if (TryParseTotalBytes(line) is { } lineTotalBytes)
+                    currentStreamTotalBytes = lineTotalBytes;
+
+                var overall = (fileIndex + percent / 100.0) / totalFiles;
+
+                long? downloadedBytes = null;
+                long? totalBytesSoFar = null;
+                if (currentStreamTotalBytes is { } streamTotal)
+                {
+                    downloadedBytes = completedStreamsBytes + (long)(streamTotal * (percent / 100.0));
+                    totalBytesSoFar = completedStreamsBytes + streamTotal;
+                }
+
+                progress?.Report(new YtDlpDownloadProgress(Math.Clamp(overall, 0.0, 1.0), downloadedBytes, totalBytesSoFar));
+            }
+        }
     }
 
     /// <summary>Internal (not private) so Yoink.Tests can feed it sample yt-dlp JSON directly.</summary>

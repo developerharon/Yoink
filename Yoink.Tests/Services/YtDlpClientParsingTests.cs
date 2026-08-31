@@ -172,3 +172,26 @@ public class TryParseProgressPercentTests
         Assert.False(YtDlpClient.TryParseProgressPercent(line, out _));
     }
 }
+
+/// <summary>Real lines captured from an actual `yt-dlp --newline` run — see the "download-progress-size" project memory.</summary>
+public class TryParseTotalBytesTests
+{
+    [Theory]
+    [InlineData("[download]   0.5% of  218.53KiB at  Unknown B/s ETA Unknown", 223774)]
+    [InlineData("[download] 100.0% of  218.53KiB at    9.69MiB/s ETA 00:00", 223774)]
+    [InlineData("[download] 100% of  218.53KiB in 00:00:00 at 2.58MiB/s", 223774)]
+    [InlineData("[download]  42.5% of 10.00MiB at 1.00MiB/s ETA 00:05", 10485760)]
+    [InlineData("[download]  12.0% of  1.00GiB at 5.00MiB/s ETA 00:10", 1073741824)]
+    public void ParsesTotalBytesFromARealDownloadLine(string line, long expectedBytes)
+    {
+        Assert.Equal(expectedBytes, YtDlpClient.TryParseTotalBytes(line));
+    }
+
+    [Theory]
+    [InlineData("[download] Destination: video.f137.mp4")]
+    [InlineData("some unrelated line")]
+    public void ReturnsNull_ForLinesWithNoSize(string line)
+    {
+        Assert.Null(YtDlpClient.TryParseTotalBytes(line));
+    }
+}
