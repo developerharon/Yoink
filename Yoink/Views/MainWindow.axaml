@@ -49,7 +49,17 @@
              Background, so (unlike the resize strips above) it never receives pointer events itself. -->
         <Border Margin="4" BorderBrush="{DynamicResource BorderBrush2}" BorderThickness="1" IsHitTestVisible="False" />
 
-        <Grid Name="MainGrid" Margin="4">
+        <!-- Rows, not one shared area: NavView (Row 0) holds only the top strip now — its Content is
+             deliberately left unset, so it auto-sizes to just the pane row's own natural height
+             rather than stretching to fill the rest of the window — with DownloadsBody/SettingsBody
+             moved to Row 1 as full-width siblings instead of living inside NavView.Content the way
+             they used to. That's what NavView.Margin's caption-button-space reservation (still set in
+             MainWindow_Opened, unchanged) now insets only: the top strip alone, not the body — see
+             this file's Panel-level comment for why reserving it at all is necessary, and the
+             merged-titlebar-navbar project memory for why the reservation used to bleed into the body
+             (margining the combined NavView, back when Content was still nested inside it, shrank
+             both together) before this split fixed it. -->
+        <Grid Name="MainGrid" Margin="4" RowDefinitions="Auto,*">
 
     <!-- The app shell: a top nav bar (icon+wordmark, plus FluentAvalonia's built-in Settings entry —
          no menu item for Downloads, since that's the home/dashboard, not something you navigate to)
@@ -63,7 +73,7 @@
          at all — see MainWindow_Opened in the code-behind for how NavView's own Margin reserves space
          for CaptionButtons below on whichever side matches the platform (right on Windows/Linux, left
          on macOS), so the icon+wordmark/Settings tab never render underneath them. -->
-    <ui:FANavigationView x:Name="NavView"
+    <ui:FANavigationView x:Name="NavView" Grid.Row="0"
                          PaneDisplayMode="Top"
                          IsSettingsVisible="True"
                          IsBackButtonVisible="False"
@@ -91,8 +101,14 @@
                 <TextBlock Text="Yoink" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
             </StackPanel>
         </ui:FANavigationView.PaneCustomContent>
+    </ui:FANavigationView>
 
-        <Grid Margin="32,28">
+        <!-- The actual page body — a sibling of NavView (Row 1) rather than living inside its
+             Content the way it used to: NavView.Margin's caption-button-space reservation shrank
+             this along with the pane row when it was nested in there, which is exactly the blank
+             strip down the right edge that got reported after the previous commit. Full width here,
+             no reservation needed — CaptionButtons only occupies Row 0's height. -->
+        <Grid Grid.Row="1" Margin="32,28">
 
             <!-- Downloads (default). Used to be wrapped in a Border.Card (rounded, bordered box)
                  sitting inside the window's own rounded frame — a "box inside a box" look that read
@@ -169,8 +185,6 @@
             <views:SettingsView Name="SettingsBody" IsVisible="False" />
 
         </Grid>
-
-    </ui:FANavigationView>
 
     <!-- The window controls this app now draws itself (see the Window-level WindowDecorations="None"
          comment above). Order/side is swapped for macOS in MainWindow_Opened — Close/Minimize/Maximize

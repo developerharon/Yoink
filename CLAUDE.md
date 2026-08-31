@@ -168,8 +168,14 @@ project root — that's exactly the flat structure this reorg moved away from.
       underneath them. Margining the whole `NavView` (not padding it) is deliberate: `FANavigationView.Padding`
       (inherited from `TemplatedControl`) was tried first and, verified via a throwaway headless
       render, has **no effect** on the Top-mode pane row at all in FluentAvaloniaUI 3.1.0; `Margin`
-      does shift it (Settings tab included), at the cost of narrowing the body content area by the
-      same sliver on that edge — an accepted trade-off rather than fighting the template further.
+      does shift it (Settings tab included). **This margin only affects the top strip, not the page
+      body**: `MainGrid` is `RowDefinitions="Auto,*"`, `NavView` sits in Row 0 with its `Content`
+      deliberately left unset (so it auto-sizes to just the pane row's own natural height rather than
+      stretching), and the actual `DownloadsBody`/`SettingsBody` `Grid` — previously nested inside
+      `NavView.Content`, which is what made the reservation-margin narrow the body too — moved to Row
+      1 as a full-width sibling instead. First shipped with the body still nested (narrower on the
+      caption-button edge, an "accepted trade-off" that turned out not to be acceptable once seen for
+      real) and split apart the next round once that was reported.
     - Glyphs are hand-specified `Path` geometry (`Path.CaptionGlyph` in `App.axaml`), the same
       technique `Path.YoinkMark` already uses — not FluentAvaloniaUI's `FASymbolIcon`: its `Symbol`
       property turned out to be typed `FASymbol`, a large modern Fluent-System-Icons set with no
