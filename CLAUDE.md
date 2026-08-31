@@ -136,29 +136,57 @@ project root — that's exactly the flat structure this reorg moved away from.
   anything handed back when the other is shown — every setting is read fresh at the point it's needed
   regardless of which page is currently visible (see `SettingsView` below).
   - **This same top row doubles as the window's own title bar**, rather than sitting below a separate
-    native one: the root `Window` sets `ExtendClientAreaToDecorationsHint="True"` (plus
-    `ExtendClientAreaTitleBarHeightHint="48"`, tuned to roughly match the nav row's own rendered
-    height), and `PaneCustomContent`'s icon+wordmark `StackPanel` carries
-    `Avalonia.Controls.Chrome.WindowDecorationProperties.ElementRole="TitleBar"` so that area supports
-    native drag-to-move/double-click-to-maximize. `WindowDecorationMargin` (subscribed to via
-    `PropertyChanged` in the constructor, applied straight onto `NavView.Margin`) reports how much
-    space the system reserves for its own caption buttons — right-side width for min/max/close on
-    Windows, left-side width for the macOS traffic lights — so the icon/wordmark/Settings tab never
-    render underneath them, with no per-platform branching needed in this codebase at all. `NavView`
-    is margined rather than padded specifically because `FANavigationView.Padding` (inherited from
-    `TemplatedControl`) was tried first and, verified via a throwaway headless render, has **no
-    effect** on the Top-mode pane row at all in FluentAvaloniaUI 3.1.0 — `Margin` on the whole control
-    does shift the pane row (and, as a side effect, narrows the body content area by the same sliver
-    on that edge while the window is extended, an accepted trade-off rather than fighting
-    `FANavigationView`'s own template further). This also means `MainWindow` deliberately stayed a
-    plain `Window`, not FluentAvaloniaUI's own `FluentAvalonia.UI.Windowing.FAAppWindow` — reflecting
-    the actually-installed 3.1.0 DLL showed its `AppWindowTitleBar` lacks the `LeftInset`/`RightInset`/
-    `SetDragRectangles`/`TitleBarHitTestType` members its current online docs describe (version drift,
-    the same class of gotcha as the `PaneHeader` one above), and switching base classes would also
-    change `Icon`'s type from `WindowIcon` (what `App.CurrentIcon`/`ApplyAccent` push everywhere) to
-    `IImage` for no benefit here. Real native chrome (exact button rendering, macOS traffic-light
-    position) can't be verified headless — see the `headless-visual-verification` memory — and needs a
-    real windowed run on each platform to confirm.
+    native one — via `WindowDecorations="None"` (fully custom chrome, this app draws literally
+    everything), **not** the cooperative `ExtendClientAreaToDecorationsHint` this used at first. That
+    first attempt genuinely doesn't merge on this app's primary dev platform: verified against the
+    real running app (not headless — GNOME/Mutter draws no chrome at all in Avalonia's headless mode,
+    so this specific bug was invisible there), Mutter just keeps painting its own full separate title
+    bar frame regardless of the hint — extend-into-decorations only actually shares a row with native
+    caption buttons on window managers that cooperate with it (confirmed that's how it's meant to work
+    on Windows' DWM), which Mutter doesn't. So Yoink now owns every pixel instead:
+    - `Panel` → 8 thin transparent `Border` strips (4 edges, 4 corners) wired to
+      `Window.BeginResizeDrag` in the code-behind, standing in for the OS's own edge-drag resize that
+      `WindowDecorations="None"` also removes, then `MainGrid` (`Margin="4"`, leaving exactly those
+      strips clear to receive pointer events) holding everything else, plus a bare 1px
+      `IsHitTestVisible="False"` outline standing in for the native window edge.
+    - `PaneCustomContent`'s icon+wordmark carries both
+      `Avalonia.Controls.Chrome.WindowDecorationProperties.ElementRole="TitleBar"` (documented to grant
+      native drag-to-move/double-click-to-maximize on its own) **and** a manual
+      `PointerPressed` → `BeginMoveDrag` handler — belt-and-braces, since the attached property's
+      actual effect couldn't be confirmed here either.
+    - `CaptionButtons`, a `StackPanel` of three hand-drawn `Button`s (`Path.CaptionGlyph` — a dash, a
+      square, an X; the maximize/restore one swaps between two `Geometry` constants on
+      `WindowState` changes, via a `PropertyChanged` subscription) wired to
+      `WindowState = Minimized`/`WindowState == Maximized ? Normal : Maximized`/`Close()`. `Close()`
+      specifically (not `Hide()`) — it passes `WindowCloseReason.WindowClosing`, confirmed against
+      Avalonia's own source, so `App.SetUpTrayIcon`'s `Closing` handler still intercepts this button
+      exactly like it would a native one, for the existing minimize-to-tray behavior.
+    - `NavView` gets a fixed-width `Margin` (`MainWindow_Opened` in the code-behind) reserving
+      `CaptionButtons`' own footprint — right side on Windows/Linux, left side (with `CaptionButtons`
+      itself reordered Close/Minimize/Maximize and moved to `HorizontalAlignment="Left"`) on macOS,
+      matching where the traffic lights go there — so the icon/wordmark/Settings tab never render
+      underneath them. Margining the whole `NavView` (not padding it) is deliberate: `FANavigationView.Padding`
+      (inherited from `TemplatedControl`) was tried first and, verified via a throwaway headless
+      render, has **no effect** on the Top-mode pane row at all in FluentAvaloniaUI 3.1.0; `Margin`
+      does shift it (Settings tab included), at the cost of narrowing the body content area by the
+      same sliver on that edge — an accepted trade-off rather than fighting the template further.
+    - Glyphs are hand-specified `Path` geometry (`Path.CaptionGlyph` in `App.axaml`), the same
+      technique `Path.YoinkMark` already uses — not FluentAvaloniaUI's `FASymbolIcon`: its `Symbol`
+      property turned out to be typed `FASymbol`, a large modern Fluent-System-Icons set with no
+      minimize/maximize/close-shaped members at all, not the small `Chrome*`-named legacy WinUI2
+      `Symbol` set that strings found in the DLL briefly suggested — caught by an actual compile
+      error, not assumed.
+    - `MainWindow` deliberately stayed a plain `Window`, not FluentAvaloniaUI's own
+      `FluentAvalonia.UI.Windowing.FAAppWindow` — reflecting the actually-installed 3.1.0 DLL showed
+      its `AppWindowTitleBar` lacks the `LeftInset`/`RightInset`/`SetDragRectangles`/
+      `TitleBarHitTestType` members its current online docs describe (version drift, the same class
+      of gotcha as the `PaneHeader` one above), and switching base classes would also change `Icon`'s
+      type from `WindowIcon` (what `App.CurrentIcon`/`ApplyAccent` push everywhere) to `IImage` for no
+      benefit here.
+    - See the `merged-titlebar-navbar` project memory for the full story, including what's still
+      genuinely unverified (this sandbox has no display at all, and no Windows/macOS access) —
+      real hover colors, the resize-edge feel, and the macOS button ordering/side all still need a
+      hands-on check.
   - The queue view itself (`DownloadsBody`) is unchanged in substance from before this shell existed: an
     `ItemsControl` bound to an `ObservableCollection<DownloadQueueItem>`, one row per queue entry (title,
     status, a progress bar when active/paused, and Pause/Resume/Cancel/Retry/"Show in folder" buttons —

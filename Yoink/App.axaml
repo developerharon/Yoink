@@ -137,6 +137,43 @@
             <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
         </Style>
 
+        <!-- Views.MainWindow's own hand-drawn min/max/close row (WindowDecorations="None" means
+             there's no OS-drawn ones to fall back on) — sized/shaped like Windows 11's own caption
+             buttons (flush rectangles, no corner radius, full title-bar height) since that's the
+             closest native reference point, on the platforms this app currently ships packaging for. -->
+        <Style Selector="Button.CaptionButton">
+            <Setter Property="Width" Value="46" />
+            <Setter Property="Height" Value="40" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Button.CaptionButton:pointerover">
+            <Setter Property="Background" Value="{DynamicResource BorderBrush2}" />
+        </Style>
+        <!-- Close gets the Windows-11-style red hover instead of the neutral one above, with a white
+             glyph so ChromeClose stays legible against ErrorBrush. -->
+        <Style Selector="Button.CaptionButton.CloseButton:pointerover">
+            <Setter Property="Background" Value="{DynamicResource ErrorBrush}" />
+        </Style>
+
+        <!-- The glyphs inside CaptionButton (Views.MainWindow's hand-drawn min/max/close) — same
+             hand-specified-geometry technique as Path.YoinkMark above, just simple enough (a dash, a
+             square, an X) not to need a named/shared StreamGeometry resource each. -->
+        <Style Selector="Path.CaptionGlyph">
+            <Setter Property="Width" Value="10" />
+            <Setter Property="Height" Value="10" />
+            <Setter Property="Stretch" Value="None" />
+            <Setter Property="Fill" Value="Transparent" />
+            <Setter Property="Stroke" Value="{DynamicResource TextMutedBrush}" />
+            <Setter Property="StrokeThickness" Value="1" />
+        </Style>
+        <Style Selector="Button.CaptionButton.CloseButton:pointerover Path.CaptionGlyph">
+            <Setter Property="Stroke" Value="White" />
+        </Style>
+
         <!-- The reusable mark next to "Yoink" in Views.MainWindow's header — see YoinkMarkGeometry
              above. Stroke is left unset here (each usage picks AccentBrush, OnAccentBrush, etc.
              depending on what it's sitting on) — only the shape/behavior is shared. -->

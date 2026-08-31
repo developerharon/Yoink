@@ -10,6 +10,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Threading;
 using FluentAvalonia.UI.Controls;
 using Yoink.Models;
@@ -48,20 +49,38 @@ public partial class MainWindow : Window
         LstQueue.ItemsSource = _items;
         UpdateEmptyQueueVisibility();
 
-        // Now that the nav bar doubles as the window's own title bar (ExtendClientAreaToDecorationsHint
-        // in MainWindow.axaml), WindowDecorationMargin reports how much space the system reserves for
-        // its own caption buttons — right-side width for min/max/close on Windows, left-side width for
-        // the traffic lights on macOS, verified empirically (a throwaway headless harness, not guessed)
-        // to keep applying as NavView shrinks/grows: NavView is the window's whole content (top strip
-        // and body both), so margining it in reserves the space *and* moves the Settings tab clear of
-        // it, at the cost of the body area losing the same sliver on that edge — an acceptable trade
-        // for not fighting FANavigationView's own Top-mode template (setting its Padding instead, the
-        // more obviously "should work" option, was tried and confirmed to have no effect at all).
-        NavView.Margin = WindowDecorationMargin;
+        // Now that the nav bar doubles as the window's own title bar (WindowDecorations="None" in
+        // MainWindow.axaml — see that file's comment on why, over the cooperative
+        // ExtendClientAreaToDecorationsHint approach this used at first), CaptionButtons is this
+        // app's own min/max/close row rather than anything OS-drawn, and there's no
+        // WindowDecorationMargin to react to any more (it only ever reports space reserved by real
+        // OS/window-manager chrome, and there isn't any here). NavView gets a fixed margin instead,
+        // sized to CaptionButtons' own footprint (3 * 46px, kept in sync with the CaptionButton style
+        // in App.axaml by eye — there's nothing to bind it to, since Panel doesn't measure siblings
+        // against each other) so the icon/wordmark/Settings tab stay clear of it, on whichever side
+        // matches the platform: right on Windows/Linux, left on macOS, where the traffic lights go.
+        // Margining the whole NavView (not just padding it) is deliberate — see MainWindow.axaml's
+        // PaneCustomContent comment for why Padding alone doesn't touch the Top-mode pane row at all.
+        const double captionButtonsWidth = 46 * 3;
+        if (OperatingSystem.IsMacOS())
+        {
+            CaptionButtons.HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left;
+            CaptionButtons.Children.Clear();
+            CaptionButtons.Children.Add(BtnClose);
+            CaptionButtons.Children.Add(BtnMinimize);
+            CaptionButtons.Children.Add(BtnMaximizeRestore);
+            NavView.Margin = new Thickness(captionButtonsWidth, 0, 0, 0);
+        }
+        else
+        {
+            NavView.Margin = new Thickness(0, 0, captionButtonsWidth, 0);
+        }
+
+        UpdateMaximizeRestoreIcon();
         PropertyChanged += (_, e) =>
         {
-            if (e.Property == WindowDecorationMarginProperty)
-                NavView.Margin = (Thickness)e.NewValue!;
+            if (e.Property == WindowStateProperty)
+                UpdateMaximizeRestoreIcon();
         };
 
         Opened += MainWindow_Opened;
@@ -69,6 +88,62 @@ public partial class MainWindow : Window
         _ = LoadQueueAsync();
         _ = WarnIfYtDlpMissingAsync();
         _ = CheckForUpdatesAsync();
+    }
+
+    /// <summary>
+    /// Dragging the icon/wordmark area moves the window — belt-and-braces alongside
+    /// <c>chrome:WindowDecorationProperties.ElementRole="TitleBar"</c> in the XAML (see that
+    /// element's comment). Only the primary button starts a drag, matching how a real title bar
+    /// ignores right/middle clicks there.
+    /// </summary>
+    private void TitleBarDragHandle_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            BeginMoveDrag(e);
+    }
+
+    /// <summary>
+    /// The 4 edge + 4 corner strips in MainWindow.axaml stand in for the OS's own edge-drag resize,
+    /// lost along with every other native decoration once <c>WindowDecorations="None"</c> in the
+    /// XAML. Each strip's <c>Tag</c> names the matching <see cref="WindowEdge"/> member.
+    /// </summary>
+    private void ResizeEdge_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Control { Tag: string tag } || !Enum.TryParse<WindowEdge>(tag, out var edge))
+            return;
+
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            BeginResizeDrag(edge, e);
+    }
+
+    private void BtnMinimize_Click(object? sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void BtnMaximizeRestore_Click(object? sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    // Close(), not a bare Hide()/TryShutdown() — this needs to raise the same Closing event a native
+    // close button would, since App.SetUpTrayIcon's Closing handler (checking
+    // WindowCloseReason.WindowClosing, which Close() does pass) is what actually decides
+    // hide-to-tray vs. real shutdown.
+    private void BtnClose_Click(object? sender, RoutedEventArgs e) => Close();
+
+    /// <summary>
+    /// Keeps <c>BtnMaximizeRestore</c>'s glyph/tooltip matching the window's actual state — including
+    /// when that state changes some way other than clicking the button itself (double-clicking the
+    /// drag handle, an OS-level snap gesture, ...), via the <see cref="AvaloniaObject.PropertyChanged"/>
+    /// subscription in the constructor.
+    /// </summary>
+    private static readonly Geometry MaximizeGlyph = Geometry.Parse("M 0.5,0.5 H 9.5 V 9.5 H 0.5 Z");
+
+    // Two overlapping outlines (the standard restore glyph) — a partial "back" square peeking out
+    // top-right of a full "front" one, both sharing the (2,2) corner.
+    private static readonly Geometry RestoreGlyph = Geometry.Parse("M 2,0 H 9 V 7 M 0,2 H 7 V 9 H 0 Z");
+
+    private void UpdateMaximizeRestoreIcon()
+    {
+        var maximized = WindowState == WindowState.Maximized;
+        IcoMaximizeRestore.Data = maximized ? RestoreGlyph : MaximizeGlyph;
+        BtnMaximizeRestore.SetValue(ToolTip.TipProperty, maximized ? "Restore" : "Maximize");
     }
 
     /// <summary>

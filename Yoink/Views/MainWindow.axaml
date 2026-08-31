@@ -10,8 +10,46 @@
         Width="760" Height="640"
         MinWidth="640" MinHeight="520"
         WindowStartupLocation="CenterScreen"
-        ExtendClientAreaToDecorationsHint="True"
-        ExtendClientAreaTitleBarHeightHint="48">
+        WindowDecorations="None">
+
+    <!-- WindowDecorations="None": no OS-drawn frame at all, replaced by BtnMinimize/BtnMaximizeRestore/
+         BtnClose below plus MainWindow.axaml.cs's resize-edge wiring. Not the cooperative
+         ExtendClientAreaToDecorationsHint approach this used at first — that only actually merges
+         with a shared title bar row on platforms whose window manager paints caption buttons inside
+         the extended region (confirmed working that way on Windows' DWM); GNOME/Mutter (this app's
+         primary dev platform) just keeps painting its own full separate title bar frame regardless of
+         the hint, so on Linux specifically nothing short of owning every pixel actually merges the two
+         bars. See the merged-titlebar-navbar project memory for the full story, including why
+         FluentAvaloniaUI's own AppWindow/TitleBar wasn't used either. -->
+    <Panel>
+
+        <!-- Resize handles — WindowDecorations="None" also removes the OS's own edge-drag resize, so
+             these thin (4px edges, 8px corners) transparent strips stand in for it via
+             Window.BeginResizeDrag. Declared before (so beneath, z-order-wise) MainGrid below, which
+             covers all of them except this narrow outer ring — MainGrid's own Margin="4" is what
+             leaves that ring clear to receive pointer events at all. -->
+        <Border Name="ResizeN" Height="4" VerticalAlignment="Top" Cursor="SizeNorthSouth"
+                Background="Transparent" Tag="North" PointerPressed="ResizeEdge_PointerPressed" />
+        <Border Name="ResizeS" Height="4" VerticalAlignment="Bottom" Cursor="SizeNorthSouth"
+                Background="Transparent" Tag="South" PointerPressed="ResizeEdge_PointerPressed" />
+        <Border Name="ResizeW" Width="4" HorizontalAlignment="Left" Cursor="SizeWestEast"
+                Background="Transparent" Tag="West" PointerPressed="ResizeEdge_PointerPressed" />
+        <Border Name="ResizeE" Width="4" HorizontalAlignment="Right" Cursor="SizeWestEast"
+                Background="Transparent" Tag="East" PointerPressed="ResizeEdge_PointerPressed" />
+        <Border Name="ResizeNW" Width="8" Height="8" HorizontalAlignment="Left" VerticalAlignment="Top"
+                Cursor="TopLeftCorner" Background="Transparent" Tag="NorthWest" PointerPressed="ResizeEdge_PointerPressed" />
+        <Border Name="ResizeNE" Width="8" Height="8" HorizontalAlignment="Right" VerticalAlignment="Top"
+                Cursor="TopRightCorner" Background="Transparent" Tag="NorthEast" PointerPressed="ResizeEdge_PointerPressed" />
+        <Border Name="ResizeSW" Width="8" Height="8" HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                Cursor="BottomLeftCorner" Background="Transparent" Tag="SouthWest" PointerPressed="ResizeEdge_PointerPressed" />
+        <Border Name="ResizeSE" Width="8" Height="8" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Cursor="BottomRightCorner" Background="Transparent" Tag="SouthEast" PointerPressed="ResizeEdge_PointerPressed" />
+
+        <!-- A bare 1px outline stands in for whatever subtle edge the OS frame used to draw — no
+             Background, so (unlike the resize strips above) it never receives pointer events itself. -->
+        <Border Margin="4" BorderBrush="{DynamicResource BorderBrush2}" BorderThickness="1" IsHitTestVisible="False" />
+
+        <Grid Name="MainGrid" Margin="4">
 
     <!-- The app shell: a top nav bar (icon+wordmark, plus FluentAvalonia's built-in Settings entry —
          no menu item for Downloads, since that's the home/dashboard, not something you navigate to)
@@ -21,11 +59,10 @@
          button as the way out (shown only while on that page — Downloads has nowhere to go "back"
          from), so it actually feels like part of the app.
 
-         This same top row also doubles as the window's own title bar (ExtendClientAreaToDecorationsHint
-         above) rather than sitting below a separate native one — see MainWindow_Opened's
-         WindowDecorationMargin subscription in the code-behind for how the icon+wordmark stay clear
-         of the system-drawn min/max/close (Windows) / traffic lights (macOS), which render in
-         whichever corner is native to that platform without any per-OS code here. -->
+         This same top row also doubles as the window's own title bar now that there's no OS-drawn one
+         at all — see MainWindow_Opened in the code-behind for how NavView's own Margin reserves space
+         for CaptionButtons below on whichever side matches the platform (right on Windows/Linux, left
+         on macOS), so the icon+wordmark/Settings tab never render underneath them. -->
     <ui:FANavigationView x:Name="NavView"
                          PaneDisplayMode="Top"
                          IsSettingsVisible="True"
@@ -38,13 +75,17 @@
              FluentAvaloniaUI 3.1.0's Top-mode template simply never presents PaneHeader/PaneTitle at
              all; PaneCustomContent is the slot that actually renders on the left in this mode. -->
         <ui:FANavigationView.PaneCustomContent>
-            <!-- chrome:WindowDecorationProperties.ElementRole="TitleBar" is what makes this specific
-                 area drag-to-move/double-click-to-maximize now that it's sharing the window's own
-                 title bar row — the one guaranteed draggable spot, the same way the icon/title area
-                 is in every app that merges its title bar with a tab or nav strip. -->
+            <!-- chrome:WindowDecorationProperties.ElementRole="TitleBar" and the manual
+                 PointerPressed handler below are belt-and-braces: the attached property is
+                 documented to grant native drag-to-move/double-click-to-maximize on its own, but
+                 since that couldn't be confirmed on this dev platform (headless rendering shows no
+                 real window manager at all), BeginMoveDrag is wired directly too so dragging the
+                 window definitely works even if the attached property turns out to be a no-op here. -->
             <StackPanel Name="TitleBarDragHandle" Orientation="Horizontal" Spacing="8"
                         VerticalAlignment="Center" Margin="12,0,20,0"
-                        chrome:WindowDecorationProperties.ElementRole="TitleBar">
+                        Background="Transparent"
+                        chrome:WindowDecorationProperties.ElementRole="TitleBar"
+                        PointerPressed="TitleBarDragHandle_PointerPressed">
                 <Path Classes="YoinkMark" Width="22" Height="22" StrokeThickness="2"
                       Stroke="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
                 <TextBlock Text="Yoink" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -131,4 +172,26 @@
 
     </ui:FANavigationView>
 
+    <!-- The window controls this app now draws itself (see the Window-level WindowDecorations="None"
+         comment above). Order/side is swapped for macOS in MainWindow_Opened — Close/Minimize/Maximize
+         on the left there, matching every native macOS app, versus Minimize/Maximize/Close on the
+         right everywhere else. Glyphs are hand-specified geometry (Path.CaptionGlyph, styled in
+         App.axaml), the same technique Path.YoinkMark already uses, rather than FluentAvaloniaUI's
+         icon set — FASymbolIcon's Symbol enum (FASymbol) turned out to be its large modern Fluent
+         System Icons set with no minimize/maximize/close-shaped members at all, not the small
+         Chrome*-named legacy WinUI2 Symbol set the strings in the DLL briefly suggested. -->
+    <StackPanel Name="CaptionButtons" Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Right">
+        <Button Name="BtnMinimize" Classes="CaptionButton" Click="BtnMinimize_Click" ToolTip.Tip="Minimize">
+            <Path Classes="CaptionGlyph" Data="M 0,5 H 10" />
+        </Button>
+        <Button Name="BtnMaximizeRestore" Classes="CaptionButton" Click="BtnMaximizeRestore_Click" ToolTip.Tip="Maximize">
+            <Path Name="IcoMaximizeRestore" Classes="CaptionGlyph" Data="M 0.5,0.5 H 9.5 V 9.5 H 0.5 Z" />
+        </Button>
+        <Button Name="BtnClose" Classes="CaptionButton CloseButton" Click="BtnClose_Click" ToolTip.Tip="Close">
+            <Path Classes="CaptionGlyph" Data="M 0,0 L 10,10 M 0,10 L 10,0" />
+        </Button>
+    </StackPanel>
+
+        </Grid>
+    </Panel>
 </Window>
