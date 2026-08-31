@@ -84,6 +84,19 @@ public partial class App : Application
         TrayIcon.SetIcons(Current!, new TrayIcons { trayIcon });
         _trayIcon = trayIcon;
 
+        // TrayIcon wraps a real platform resource (a StatusNotifierItem/D-Bus registration on
+        // Linux, NOTIFYICONDATA on Windows, an NSStatusItem on macOS) behind IDisposable — letting
+        // the process just exit without disposing it is the classic "ghost tray icon left behind
+        // until you mouse over it" bug on Windows specifically. desktop.Exit fires once, right
+        // before the process actually terminates (via desktop.TryShutdown() above or an OS-driven
+        // shutdown), so this is the one place that's guaranteed to run exactly once on every exit
+        // path, unlike mainWindow.Closing below, which the tray-mode branch deliberately cancels.
+        desktop.Exit += (_, _) =>
+        {
+            _trayIcon?.Dispose();
+            _trayIcon = null;
+        };
+
         mainWindow.Closing += (_, e) =>
         {
             // Only intercept the user clicking the window's own close button — let this same

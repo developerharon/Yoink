@@ -10,6 +10,57 @@
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <RootNamespace>Yoink</RootNamespace>
     <AssemblyName>Yoink</AssemblyName>
+
+    <!--
+      Footprint. release.yml publishes self-contained (bundles the whole .NET runtime, since
+      Velopack's self-updating package model needs that — see UpdateService's doc comment), which
+      makes runtime-level size/memory knobs actually matter for what ships, not just dev-loop
+      builds. Every number below is a real `du -sh` on an actual `dotnet publish -c Release -r
+      linux-x64 self-contained true` output, not an estimate — checked one setting at a time
+      rather than assumed, same as this file's other "confirmed, not assumed" notes.
+
+      InvariantGlobalization made no measurable difference to the on-disk publish size by itself
+      here (110M before and after) — this SDK's linux-x64 self-contained publish doesn't bundle a
+      separate ICU data file to begin with (unlike some Windows self-contained builds, which do).
+      It's kept anyway for what it still genuinely buys: skipping ICU initialization/loading at
+      process startup, which is a real (if modest) runtime-memory and startup-time saving that
+      doesn't show up in a publish-folder size diff. Confirmed safe to flip on: grepped the whole
+      codebase for ToUpper/ToLower/string.Compare/CompareTo/TextInfo — none exist. Every
+      DateTimeOffset/double already goes through CultureInfo.InvariantCulture explicitly
+      (DownloadQueueService), and the one bare int.Parse (AddDownloadDialog's resolution combo)
+      only ever sees plain ASCII digits. If a future feature adds real locale-aware text handling,
+      revisit this rather than assuming it's still safe.
+
+      Workstation GC (ServerGarbageCollection=false) with background collection
+      (ConcurrentGarbageCollection=true) are WinExe's own defaults already — set explicitly here so
+      that stays true on purpose rather than by accident of project type. Server GC trades memory
+      for throughput (one heap per core), which is the wrong trade for a single-window desktop app
+      that's mostly idle: Workstation GC's one small heap plus background collection (so a gen2
+      collection doesn't stall the UI thread) is the low-memory, low-pause combination this app
+      actually wants.
+
+      PublishTrimmed is where the real on-disk win is: 110M → 52M (53% smaller) on the same
+      linux-x64 self-contained publish. Needed AppSettingsJsonContext to exist first —
+      SettingsService's old reflection-based JsonSerializer.Serialize/Deserialize<AppSettings>
+      calls are exactly what the trimmer can't statically prove are safe, and a trimmed publish
+      before that fix emitted IL2026 warnings pointing at those two calls specifically (i.e. this
+      wasn't hypothetical risk — the trimmer caught a real one, right where reflection-based JSON
+      always is the risk). After that fix, a trimmed publish emits zero warnings from this
+      codebase; the one remaining warning (IL2104, Avalonia.Controls.DataGrid) is a transitive
+      FluentAvaloniaUI dependency Yoink's own code never references (grepped — no `DataGrid`
+      anywhere in Yoink/), so trimming can't have broken something nothing calls. Also re-ran the
+      full `dotnet test` suite (107/107) and the headless-render MainWindow check (see the
+      headless-visual-verification project memory) against the change. What that verification
+      does NOT cover: actually launching the packaged, trimmed, self-contained executable on a
+      real windowed desktop — this dev sandbox has no display and no way to simulate one (same
+      constraint noted in that memory). Treat the first trimmed release the same way release.yml
+      already treats Windows/macOS: worth an explicit real-hardware smoke test before calling it
+      fully verified, rather than assuming clean warnings + passing tests is the complete picture.
+    -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <PublishTrimmed>true</PublishTrimmed>
   </PropertyGroup>
 
   <ItemGroup>
