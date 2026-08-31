@@ -67,4 +67,75 @@ public static class SettingsService
         var json = JsonSerializer.Serialize(settings, AppSettingsJsonContext.Default.AppSettings);
         File.WriteAllText(SettingsPath, json);
     }
+
+    /// <summary>
+    /// The platform's own "Downloads" folder, used whenever <see cref="AppSettings.DownloadFolder"/>
+    /// is unset. Windows and macOS don't expose a "Downloads" case among
+    /// <see cref="Environment.SpecialFolder"/> the way they do Desktop/Documents (Windows only
+    /// exposes it as a COM known-folder GUID, which would need interop nothing else in this app
+    /// needs), but both default the real thing to a "Downloads" sibling of the profile folders that
+    /// <see cref="Environment.SpecialFolder.UserProfile"/> *does* expose, so that guess is used
+    /// directly there. Linux instead honors the user's actual freedesktop.org XDG_DOWNLOAD_DIR
+    /// (env var first, then the ~/.config/user-dirs.dirs file most desktops write it to) — a
+    /// relocated or localized ("Descargas", "Téléchargements", ...) Downloads folder isn't a given
+    /// there the way it is on Windows/macOS — falling back to the same ~/Downloads guess if nothing
+    /// configures it.
+    /// </summary>
+    public static string GetDefaultDownloadFolder()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var fallback = Path.Combine(home, "Downloads");
+
+        if (!OperatingSystem.IsLinux())
+            return fallback;
+
+        var xdgEnv = Environment.GetEnvironmentVariable("XDG_DOWNLOAD_DIR");
+        if (!string.IsNullOrWhiteSpace(xdgEnv))
+            return xdgEnv;
+
+        try
+        {
+            var userDirsPath = Path.Combine(home, ".config", "user-dirs.dirs");
+            if (File.Exists(userDirsPath))
+            {
+                var configured = ParseXdgDownloadDir(File.ReadAllText(userDirsPath), home);
+                if (!string.IsNullOrWhiteSpace(configured))
+                    return configured;
+            }
+        }
+        catch
+        {
+            // Best-effort — an unreadable/corrupt user-dirs.dirs just falls through to the guess below.
+        }
+
+        return fallback;
+    }
+
+    /// <summary>
+    /// Pulls XDG_DOWNLOAD_DIR out of a freedesktop.org user-dirs.dirs file's contents (format:
+    /// <c>XDG_DOWNLOAD_DIR="$HOME/Downloads"</c>, one assignment per line, '#' comments allowed),
+    /// expanding the literal "$HOME" the file conventionally uses. Internal (not private) so
+    /// Yoink.Tests can exercise the parsing directly rather than needing a real
+    /// ~/.config/user-dirs.dirs file on whatever machine runs the tests. Returns null if the file
+    /// has no such line.
+    /// </summary>
+    internal static string? ParseXdgDownloadDir(string userDirsFileContent, string home)
+    {
+        const string key = "XDG_DOWNLOAD_DIR=";
+
+        foreach (var rawLine in userDirsFileContent.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (!line.StartsWith(key, StringComparison.Ordinal))
+                continue;
+
+            var value = line[key.Length..].Trim();
+            if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+                value = value[1..^1];
+
+            return value.Replace("$HOME", home);
+        }
+
+        return null;
+    }
 }

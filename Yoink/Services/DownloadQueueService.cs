@@ -323,7 +323,12 @@ public sealed class DownloadQueueService : IDisposable
                 item.Title = info.Title;
             }
 
-            item.FilePath ??= BuildDestinationPath(item.Title);
+            // Re-read settings rather than reusing whatever ProcessLoopAsync last saw: this item
+            // may have been sitting Pending for a while, and the download-folder/speed-limit
+            // settings could have changed since.
+            var settings = SettingsService.Load();
+
+            item.FilePath ??= BuildDestinationPath(item.Title, ResolveDownloadFolder(settings));
 
             var selector = BuildFormatSelector(item.Resolution);
             var progress = new Progress<double>(p =>
@@ -332,10 +337,7 @@ public sealed class DownloadQueueService : IDisposable
                 RaiseChanged(item);
             });
 
-            // Re-read settings rather than reusing whatever ProcessLoopAsync last saw: this item
-            // may have been sitting Pending for a while, and the speed-limit/concurrency settings
-            // could have changed since.
-            var rateLimitKBps = ComputeRateLimitKBps(SettingsService.Load());
+            var rateLimitKBps = ComputeRateLimitKBps(settings);
 
             await _ytDlp.DownloadAsync(
                 item.Url,
@@ -387,11 +389,21 @@ public sealed class DownloadQueueService : IDisposable
     internal static string BuildFormatSelector(int resolution) =>
         $"bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/best";
 
-    internal static string BuildDestinationPath(string title)
+    internal static string BuildDestinationPath(string title, string downloadFolder)
     {
         var fileName = string.Concat(title.Split(Path.GetInvalidFileNameChars())) + ".mp4";
-        return Path.Combine(AppContext.BaseDirectory, fileName);
+        return Path.Combine(downloadFolder, fileName);
     }
+
+    /// <summary>
+    /// The configured download folder, or the platform's default Downloads folder when
+    /// <see cref="AppSettings.DownloadFolder"/> is unset — see that property's doc comment. Internal
+    /// (not private) so Yoink.Tests can exercise it directly.
+    /// </summary>
+    internal static string ResolveDownloadFolder(AppSettings settings) =>
+        string.IsNullOrWhiteSpace(settings.DownloadFolder)
+            ? SettingsService.GetDefaultDownloadFolder()
+            : settings.DownloadFolder;
 
     private Task<DownloadQueueItem?> GetNextPendingAsync(CancellationToken cancellationToken) =>
         WithLockAsync(async () =>

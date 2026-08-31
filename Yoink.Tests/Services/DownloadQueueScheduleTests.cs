@@ -110,8 +110,9 @@ public class BuildHelpersTests
         // on every OS this app targets rather than assuming Windows' stricter rules.
         var invalid = System.IO.Path.GetInvalidFileNameChars();
         var title = "Some" + new string(invalid) + "Video Title";
+        var downloadFolder = System.IO.Path.GetTempPath();
 
-        var fileName = System.IO.Path.GetFileName(DownloadQueueService.BuildDestinationPath(title));
+        var fileName = System.IO.Path.GetFileName(DownloadQueueService.BuildDestinationPath(title, downloadFolder));
 
         foreach (var c in invalid)
             Assert.DoesNotContain(c, fileName);
@@ -120,8 +121,96 @@ public class BuildHelpersTests
     [Fact]
     public void BuildDestinationPath_AlwaysEndsWithMp4()
     {
-        var path = DownloadQueueService.BuildDestinationPath("My Video");
+        var path = DownloadQueueService.BuildDestinationPath("My Video", System.IO.Path.GetTempPath());
 
         Assert.EndsWith(".mp4", path);
+    }
+
+    [Fact]
+    public void BuildDestinationPath_UsesGivenDownloadFolder()
+    {
+        var downloadFolder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SomeDownloadFolder");
+
+        var path = DownloadQueueService.BuildDestinationPath("My Video", downloadFolder);
+
+        Assert.Equal(downloadFolder, System.IO.Path.GetDirectoryName(path));
+    }
+
+    [Fact]
+    public void ResolveDownloadFolder_FallsBackToPlatformDefault_WhenUnset()
+    {
+        var settings = new AppSettings { DownloadFolder = null };
+
+        var resolved = DownloadQueueService.ResolveDownloadFolder(settings);
+
+        Assert.Equal(SettingsService.GetDefaultDownloadFolder(), resolved);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveDownloadFolder_TreatsBlankAsUnset(string? blank)
+    {
+        var settings = new AppSettings { DownloadFolder = blank };
+
+        var resolved = DownloadQueueService.ResolveDownloadFolder(settings);
+
+        Assert.Equal(SettingsService.GetDefaultDownloadFolder(), resolved);
+    }
+
+    [Fact]
+    public void ResolveDownloadFolder_UsesConfiguredFolder_WhenSet()
+    {
+        var configured = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "MyDownloads");
+        var settings = new AppSettings { DownloadFolder = configured };
+
+        var resolved = DownloadQueueService.ResolveDownloadFolder(settings);
+
+        Assert.Equal(configured, resolved);
+    }
+}
+
+/// <summary>SettingsService.GetDefaultDownloadFolder/ParseXdgDownloadDir — the platform-Downloads-folder
+/// default AppSettings.DownloadFolder falls back to when unset.</summary>
+public class DefaultDownloadFolderTests
+{
+    [Fact]
+    public void ParseXdgDownloadDir_ExtractsAndExpandsHome()
+    {
+        const string content = "XDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\n";
+
+        var result = SettingsService.ParseXdgDownloadDir(content, "/home/alex");
+
+        Assert.Equal("/home/alex/Downloads", result);
+    }
+
+    [Fact]
+    public void ParseXdgDownloadDir_HonorsARelocatedFolder()
+    {
+        const string content = "XDG_DOWNLOAD_DIR=\"$HOME/Documents/Downloads\"\n";
+
+        var result = SettingsService.ParseXdgDownloadDir(content, "/home/alex");
+
+        Assert.Equal("/home/alex/Documents/Downloads", result);
+    }
+
+    [Fact]
+    public void ParseXdgDownloadDir_ReturnsNull_WhenNoSuchLine()
+    {
+        const string content = "# comment\nXDG_DESKTOP_DIR=\"$HOME/Desktop\"\n";
+
+        var result = SettingsService.ParseXdgDownloadDir(content, "/home/alex");
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void GetDefaultDownloadFolder_ReturnsNonEmptyPath()
+    {
+        var result = SettingsService.GetDefaultDownloadFolder();
+
+        Assert.False(string.IsNullOrWhiteSpace(result));
+        Assert.True(System.IO.Path.IsPathRooted(result));
     }
 }

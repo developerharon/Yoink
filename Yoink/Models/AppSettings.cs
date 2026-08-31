@@ -39,6 +39,15 @@ public class AppSettings
     public bool MinimizeToTrayOnClose { get; set; }
 
     /// <summary>
+    /// Where finished downloads are saved. Null or blank means "use the platform default" —
+    /// resolved fresh via <see cref="Services.SettingsService.GetDefaultDownloadFolder"/> rather
+    /// than being baked in here at settings-creation time, so a plain unconfigured install always
+    /// tracks whatever the OS actually considers the Downloads folder (including, on Linux, the
+    /// user's own XDG_DOWNLOAD_DIR) rather than a guess frozen at first run.
+    /// </summary>
+    public string? DownloadFolder { get; set; }
+
+    /// <summary>
     /// How many downloads <see cref="Services.DownloadQueueService"/> runs at once. Always clamped
     /// to at least 1 wherever it's read, so a stray 0 or negative value in a hand-edited
     /// settings.json can't wedge the queue.

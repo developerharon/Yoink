@@ -1,7 +1,9 @@
 using System;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Platform.Storage;
 using Yoink.Models;
 using Yoink.Services;
 
@@ -33,6 +35,8 @@ public partial class SettingsView : UserControl
         SetSelectedAccentSwatch(settings.AccentColor);
         ChkClipboardWatch.IsChecked = settings.ClipboardWatchEnabled;
         ChkMinimizeToTray.IsChecked = settings.MinimizeToTrayOnClose;
+
+        TxtDownloadFolder.Text = DownloadQueueService.ResolveDownloadFolder(settings);
 
         NudMaxConcurrent.Value = settings.MaxConcurrentDownloads;
         NudPerDownloadLimit.Value = settings.PerDownloadSpeedLimitKBps;
@@ -77,6 +81,58 @@ public partial class SettingsView : UserControl
 
     private void ChkMinimizeToTray_IsCheckedChanged(object? sender, RoutedEventArgs e) =>
         UpdateSettings(s => s.MinimizeToTrayOnClose = ChkMinimizeToTray.IsChecked == true);
+
+    /// <summary>
+    /// Opens the OS folder picker via Avalonia's <see cref="IStorageProvider"/> (the cross-platform
+    /// replacement for a WinForms-style FolderBrowserDialog — Avalonia doesn't provide one directly,
+    /// same reasoning as <c>MessageBoxWindow</c> standing in for <c>MessageBox</c>) so the chosen
+    /// folder persists immediately like every other control on this page.
+    /// </summary>
+    private async void BtnBrowseDownloadFolder_Click(object? sender, RoutedEventArgs e)
+    {
+        var storageProvider = TopLevel.GetTopLevel(this)?.StorageProvider;
+        if (storageProvider is null)
+            return;
+
+        var startLocation = await TryGetStartFolderAsync(storageProvider, TxtDownloadFolder.Text);
+
+        var result = await storageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = "Choose a download folder",
+            AllowMultiple = false,
+            SuggestedStartLocation = startLocation
+        });
+
+        var folder = result.Count > 0 ? result[0].TryGetLocalPath() : null;
+        if (string.IsNullOrWhiteSpace(folder))
+            return;
+
+        TxtDownloadFolder.Text = folder;
+        UpdateSettings(s => s.DownloadFolder = folder);
+    }
+
+    private void BtnResetDownloadFolder_Click(object? sender, RoutedEventArgs e)
+    {
+        TxtDownloadFolder.Text = SettingsService.GetDefaultDownloadFolder();
+        UpdateSettings(s => s.DownloadFolder = null);
+    }
+
+    /// <summary>Best-effort: an unset/no-longer-existing path just opens the picker at its own
+    /// platform-chosen default rather than failing the whole click.</summary>
+    private static async Task<IStorageFolder?> TryGetStartFolderAsync(IStorageProvider storageProvider, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        try
+        {
+            return await storageProvider.TryGetFolderFromPathAsync(path);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private void NudMaxConcurrent_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) =>
         UpdateSettings(s => s.MaxConcurrentDownloads = (int)(NudMaxConcurrent.Value ?? 1));

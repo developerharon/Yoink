@@ -55,6 +55,19 @@
             </ui:FASettingsExpander>
 
             <ui:FASettingsExpander Header="Downloads" IconSource="Download" IsExpanded="True">
+                <ui:FASettingsExpanderItem Content="Download folder"
+                                            Description="Where finished downloads are saved.">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBox Name="TxtDownloadFolder" Width="260" IsReadOnly="True" />
+                            <Button Name="BtnBrowseDownloadFolder" Content="Browse…"
+                                    Click="BtnBrowseDownloadFolder_Click" />
+                            <Button Name="BtnResetDownloadFolder" Content="Reset"
+                                    ToolTip.Tip="Use the platform's default Downloads folder"
+                                    Click="BtnResetDownloadFolder_Click" />
+                        </StackPanel>
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
                 <ui:FASettingsExpanderItem Content="Concurrent downloads">
                     <ui:FASettingsExpanderItem.Footer>
                         <NumericUpDown Name="NudMaxConcurrent" Width="120"

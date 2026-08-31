@@ -45,7 +45,9 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
   user's actual settings.json).
 - `Services/DownloadQueueScheduleTests` — `DownloadQueueService.IsWithinWindow` (same-day and
   overnight-wrap schedule windows, boundary-inclusive/exclusive edges), `ComputeRateLimitKBps` (every
-  combination of per-download/global caps), `BuildFormatSelector`/`BuildDestinationPath`.
+  combination of per-download/global caps), `BuildFormatSelector`/`BuildDestinationPath`/
+  `ResolveDownloadFolder`, and `SettingsService.GetDefaultDownloadFolder`/`ParseXdgDownloadDir` (the
+  freedesktop.org user-dirs.dirs parsing behind the Linux default-Downloads-folder guess).
 - `Services/DownloadQueueServiceTests` — real `DownloadQueueService` instances against a temp SQLite
   file (its constructor already accepts a `databasePath` override, so this needed no production
   change): Enqueue/GetAll/Reorder/Pause/Resume/Cancel/Retry, plus an end-to-end
@@ -192,7 +194,13 @@ project root — that's exactly the flat structure this reorg moved away from.
   effect on their very next check (within one processing-loop iteration or clipboard poll). Speed limits
   use `NumericUpDown` with 0 or an empty field both meaning "unlimited" (`ToNullableLimit`); scheduling
   uses `TimePicker` (its `SelectedTime` is a `TimeSpan?`, converted to/from `AppSettings`' `TimeOnly` fields
-  by hand since there's no built-in conversion).
+  by hand since there's no built-in conversion). The Downloads group's first row, "Download folder", is a
+  read-only `TextBox` (typing an arbitrary path in wouldn't be validated) plus Browse/Reset buttons — Browse
+  opens Avalonia's `IStorageProvider.OpenFolderPickerAsync` (the cross-platform stand-in for a
+  FolderBrowserDialog, same "Avalonia doesn't provide one directly" reasoning as `MessageBoxWindow`) via
+  `TopLevel.GetTopLevel(this)`, Reset clears `AppSettings.DownloadFolder` back to `null`. The box is seeded
+  from `DownloadQueueService.ResolveDownloadFolder`, not the raw setting, so it always shows the actual
+  folder downloads will land in — the platform default when unset, not a blank field.
 - `MessageBoxWindow.axaml` / `.axaml.cs` — a minimal modal dialog (title + message + OK button) used in
   place of WinForms' `MessageBox`, which Avalonia doesn't provide out of the box. Use
   `MessageBoxWindow.ShowAsync(owner, message, title)` for anything that genuinely needs a blocking
@@ -205,7 +213,13 @@ project root — that's exactly the flat structure this reorg moved away from.
 - `SettingsService.cs` — persisted user preferences (currently just theme), paired with `Models/AppSettings.cs`.
   Reads/writes JSON at `%AppData%`/`~/.config`/`Yoink/settings.json` (via
   `Environment.SpecialFolder.ApplicationData`, so it works the same way cross-platform) and falls back to
-  defaults if the file is missing or corrupt.
+  defaults if the file is missing or corrupt. Also owns `GetDefaultDownloadFolder`, the platform-Downloads-
+  folder guess `Services.DownloadQueueService.ResolveDownloadFolder` falls back to whenever
+  `AppSettings.DownloadFolder` is unset: `~/Downloads` (via `Environment.SpecialFolder.UserProfile`, since
+  neither Windows nor macOS exposes "Downloads" as its own `SpecialFolder` the way they do Desktop/Documents)
+  on Windows/macOS, but on Linux the user's actual XDG_DOWNLOAD_DIR (env var, else parsed out of
+  `~/.config/user-dirs.dirs` by `ParseXdgDownloadDir`, else the same `~/Downloads` guess) — a relocated or
+  localized Downloads folder isn't a given there the way it is on the other two platforms.
 - `DownloadEngine.cs` — the generic core download engine from README roadmap step 1: a source-agnostic,
   resumable single-file HTTP downloader (range-request resume, progress via `IProgress<double>`,
   retry-with-backoff, cancellation). It writes to `<destination>.partial` and only moves the file into place
@@ -255,6 +269,14 @@ project root — that's exactly the flat structure this reorg moved away from.
     SQLite's file lock (with retry/backoff stalls of several seconds), which defeated the concurrency this
     step is supposed to add. A single connection sidesteps the contention entirely, since SQLite only
     supports one writer at a time regardless of how many connections ask for it.
+  - **Download folder**: `BuildDestinationPath` (called once per item, from `ProcessItemAsync`, and cached
+    onto `item.FilePath` from then on) takes the destination folder as a parameter rather than assuming one
+    — it used to hardcode `AppContext.BaseDirectory` (the app's own install/build directory, not a real
+    destination for anyone's actual downloads), which is what made this configurable in the first place.
+    `ResolveDownloadFolder` is what supplies that parameter: `AppSettings.DownloadFolder` when set, else
+    `SettingsService.GetDefaultDownloadFolder()`'s platform-Downloads-folder guess (see that method's doc
+    comment). Both are read fresh from `SettingsService.Load()` inside `ProcessItemAsync`, same as the
+    speed-limit settings right below it.
 - `ClipboardWatcherService.cs` — the clipboard-monitoring half of the "auto-catch mechanism" from README
   roadmap step 5 (the browser-extension half is not built — see the README roadmap note on why clipboard
   watching came first). Polls the clipboard on a timer (Avalonia's clipboard API has no change event, and
@@ -304,7 +326,10 @@ project root — that's exactly the flat structure this reorg moved away from.
   way `Theme` already is — this now includes the window/taskbar/tray icon itself, not just in-app colors,
   see `App.ApplyAccent`'s doc comment), `ClipboardWatchEnabled` (default
   `true`) and `MinimizeToTrayOnClose` (default `false` — see its own doc comment for why this one defaults
-  off while clipboard watching defaults on); and, from roadmap step 7,
+  off while clipboard watching defaults on); `DownloadFolder` (default `null`, meaning "use the platform's
+  Downloads folder" — see `SettingsService.GetDefaultDownloadFolder`/`DownloadQueueService.ResolveDownloadFolder`
+  above for the resolution, and `Views.SettingsView`'s Browse/Reset buttons for how it's set); and, from
+  roadmap step 7,
   `MaxConcurrentDownloads`/`PerDownloadSpeedLimitKBps`/`GlobalSpeedLimitKBps`/`SchedulingEnabled`/
   `ScheduleStart`/`ScheduleEnd` — see each property's doc comment, and `DownloadQueueService`'s notes above,
   for exactly how they combine. `LastUpdateCheckUtc` throttles `UpdateService`/`Views.MainWindow`'s update
