@@ -87,6 +87,26 @@ public class AppSettings
     /// a day rather than hitting GitHub's release feed on every launch.
     /// </summary>
     public DateTimeOffset? LastUpdateCheckUtc { get; set; }
+
+    /// <summary>
+    /// The yt-dlp/ffmpeg version last installed by <see cref="Services.DependencyProvisioningService"/>
+    /// into its managed folder — null whenever Yoink isn't managing that dependency itself (either
+    /// one's on PATH, or neither has been provisioned yet). Compared against the latest upstream
+    /// build on each check so a managed copy is only re-downloaded when something actually changed.
+    /// <see cref="InstalledFfmpegBuildTag"/> holds a Last-Modified/ETag string rather than a real
+    /// version number, since ffmpeg's static builds don't expose one the way yt-dlp's date-stamped
+    /// releases do — see that class for exactly how each is derived.
+    /// </summary>
+    public string? InstalledYtDlpVersion { get; set; }
+
+    public string? InstalledFfmpegBuildTag { get; set; }
+
+    /// <summary>
+    /// When yt-dlp/ffmpeg were last checked for a newer managed build. Null means "never". Rides
+    /// the same once-a-day cadence as <see cref="LastUpdateCheckUtc"/> rather than its own separate
+    /// timer — see <see cref="Services.DependencyProvisioningService.CheckForManagedUpdatesAsync"/>.
+    /// </summary>
+    public DateTimeOffset? LastDependencyCheckUtc { get; set; }
 }
 
 /// <summary>

@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private readonly YtDlpClient _ytDlp = new();
     private readonly DownloadQueueService _queue;
     private readonly UpdateService _updates = new();
+    private readonly DependencyProvisioningService _dependencies = new();
     private readonly ObservableCollection<DownloadQueueItem> _items = new();
 
     // Id -> _items index, kept in lockstep with _items itself (see OnQueueItemChanged/
@@ -106,7 +107,7 @@ public partial class MainWindow : Window
         Opened += MainWindow_Opened;
 
         _ = LoadQueueAsync();
-        _ = WarnIfYtDlpMissingAsync();
+        _ = EnsureDependenciesAsync();
         _ = CheckForUpdatesAsync();
     }
 
@@ -174,6 +175,8 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task CheckForUpdatesAsync()
     {
+        await CheckForDependencyUpdatesAsync();
+
         var settings = SettingsService.Load();
         if (settings.LastUpdateCheckUtc is { } last && DateTimeOffset.UtcNow - last < TimeSpan.FromHours(24))
             return;
@@ -184,6 +187,39 @@ public partial class MainWindow : Window
         var updateInfo = await _updates.CheckForUpdatesAsync();
         if (updateInfo is not null)
             await UpdatePromptDialog.ShowAsync(this, _updates, updateInfo);
+    }
+
+    /// <summary>
+    /// Keeps a Yoink-managed yt-dlp/ffmpeg copy fresh — rides the same call (and the same
+    /// once-a-day throttle shape, via its own <see cref="AppSettings.LastDependencyCheckUtc"/>) as
+    /// the app's own update check just above, per the "keep both in sync" design: dependency
+    /// freshness and app-update freshness share one heartbeat rather than each polling on its own
+    /// schedule. Never touches a copy that's on PATH instead — see
+    /// <see cref="DependencyProvisioningService"/>'s own doc comment. Silent and best-effort, like
+    /// <see cref="UpdateService"/>'s own check: a failed refresh just means the existing managed
+    /// copy keeps working until the next check succeeds.
+    /// </summary>
+    private async Task CheckForDependencyUpdatesAsync()
+    {
+        var settings = SettingsService.Load();
+        if (settings.LastDependencyCheckUtc is { } last && DateTimeOffset.UtcNow - last < TimeSpan.FromHours(24))
+            return;
+
+        settings.LastDependencyCheckUtc = DateTimeOffset.UtcNow;
+        SettingsService.Save(settings);
+
+        try
+        {
+            if (await _dependencies.CheckForManagedUpdatesAsync())
+            {
+                var paths = await _dependencies.EnsureProvisionedAsync(null);
+                _ytDlp.UseResolvedPaths(paths.YtDlpPath, paths.FfmpegDirectory);
+            }
+        }
+        catch
+        {
+            // Best-effort — see doc comment above.
+        }
     }
 
     private void MainWindow_Opened(object? sender, EventArgs e)
@@ -230,15 +266,39 @@ public partial class MainWindow : Window
         UpdateEmptyQueueVisibility();
     }
 
-    private async Task WarnIfYtDlpMissingAsync()
+    /// <summary>
+    /// First-run (or first-launch-since-losing-them) provisioning: if yt-dlp/ffmpeg aren't found
+    /// anywhere (checked via <see cref="DependencyProvisioningService.NeedsProvisioningAsync"/>,
+    /// which does no network I/O), shows <see cref="DependencySetupDialog"/> to download whichever
+    /// is missing into Yoink's own managed folder, then points <see cref="_ytDlp"/> at whatever was
+    /// actually resolved (PATH, or the managed copy). A no-op past the first launch, once both are
+    /// already available — <c>EnsureProvisionedAsync</c> still runs to resolve the paths, but that's
+    /// just fast local checks by then, not a download.
+    /// </summary>
+    private async Task EnsureDependenciesAsync()
     {
-        if (!await _ytDlp.IsAvailableAsync())
+        DependencyPaths paths;
+
+        if (await _dependencies.NeedsProvisioningAsync())
         {
-            await MessageBoxWindow.ShowAsync(
-                this,
-                "yt-dlp wasn't found on PATH, so downloads will fail until it's installed. See the README for setup instructions.",
-                "yt-dlp not found");
+            if (await DependencySetupDialog.ShowAsync(this, _dependencies) is not { } provisioned)
+            {
+                await MessageBoxWindow.ShowAsync(
+                    this,
+                    "yt-dlp/ffmpeg couldn't be set up automatically, so downloads will fail until they're " +
+                    "installed and on PATH. See the README for manual setup instructions.",
+                    "Setup incomplete");
+                return;
+            }
+
+            paths = provisioned;
         }
+        else
+        {
+            paths = await _dependencies.EnsureProvisionedAsync(null);
+        }
+
+        _ytDlp.UseResolvedPaths(paths.YtDlpPath, paths.FfmpegDirectory);
     }
 
     /// <summary>

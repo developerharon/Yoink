@@ -32,13 +32,14 @@ below.
 ### Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
-- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp#installation) — resolves and downloads every video; Yoink
-  shells out to it rather than talking to YouTube directly
-- [`ffmpeg`](https://ffmpeg.org/download.html) — merges the separately-downloaded video and audio into one
-  file
 
-`yt-dlp` and `ffmpeg` both need to be on your `PATH`. Yoink checks for `yt-dlp` on startup and tells you if
-it's missing.
+Yoink also needs [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) (resolves and downloads every video) and
+[`ffmpeg`](https://ffmpeg.org/download.html) (merges the separately-downloaded video and audio into one
+file), but you don't need to install either yourself: on first launch, Yoink checks for both on `PATH`
+and, for whichever it can't find, downloads the current official build straight into its own config
+folder and keeps that copy fresh from then on, riding the same daily check as its own update check. If
+you'd rather manage them yourself (a distro package, a version you're pinning, etc.), just put them on
+`PATH` first and Yoink leaves them alone.
 
 ### Run it
 

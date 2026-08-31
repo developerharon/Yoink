@@ -63,6 +63,26 @@ public sealed class YtDlpClient
 
     private static readonly Regex ProgressLineRegex = new(@"\[download\]\s+([\d.]+)%", RegexOptions.Compiled);
 
+    // Defaults to a bare PATH lookup, exactly like before dependency provisioning existed — every
+    // Yoink.Tests use of this class (the parsing tests) never calls UseResolvedPaths and keeps
+    // working unchanged. Views.MainWindow calls UseResolvedPaths once DependencyProvisioningService
+    // has resolved where yt-dlp/ffmpeg actually live (PATH, or a Yoink-managed copy).
+    private string _executablePath = ExecutableName;
+    private string? _ffmpegDirectory;
+
+    /// <summary>
+    /// Points this client at a resolved yt-dlp executable (a bare name to keep using PATH lookup, or
+    /// a full path to a Yoink-managed copy) and, optionally, the directory holding a managed ffmpeg
+    /// — passed to every yt-dlp invocation as <c>--ffmpeg-location</c> so yt-dlp's own muxing step
+    /// finds it without needing ffmpeg on PATH itself. See
+    /// <see cref="DependencyProvisioningService"/> for how these are resolved.
+    /// </summary>
+    public void UseResolvedPaths(string executablePath, string? ffmpegDirectory)
+    {
+        _executablePath = executablePath;
+        _ffmpegDirectory = ffmpegDirectory;
+    }
+
     /// <summary>
     /// Pulled out of <see cref="DownloadAsync"/>'s stdout loop (which calls this, not the regex
     /// directly) purely so the line-matching itself is testable without a real yt-dlp process.
@@ -305,7 +325,7 @@ public sealed class YtDlpClient
             ? value.GetInt64()
             : null;
 
-    private static async Task<string> RunForStdOutAsync(IEnumerable<string> arguments, CancellationToken cancellationToken)
+    private async Task<string> RunForStdOutAsync(IEnumerable<string> arguments, CancellationToken cancellationToken)
     {
         using var process = CreateProcess(arguments);
 
@@ -370,16 +390,24 @@ public sealed class YtDlpClient
         }
     }
 
-    private static Process CreateProcess(IEnumerable<string> arguments)
+    private Process CreateProcess(IEnumerable<string> arguments)
     {
         var startInfo = new ProcessStartInfo
         {
-            FileName = ExecutableName,
+            FileName = _executablePath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+
+        // Added ahead of every caller's own arguments (never after — everything past their trailing
+        // "--" is positional to yt-dlp, so a flag placed there would be treated as a URL instead).
+        if (!string.IsNullOrEmpty(_ffmpegDirectory))
+        {
+            startInfo.ArgumentList.Add("--ffmpeg-location");
+            startInfo.ArgumentList.Add(_ffmpegDirectory);
+        }
 
         foreach (var argument in arguments)
             startInfo.ArgumentList.Add(argument);
