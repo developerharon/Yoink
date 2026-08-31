@@ -38,12 +38,32 @@ public partial class MainWindow : Window
     // isn't guaranteed to be available any earlier than that.
     private ClipboardWatcherService? _clipboardWatcher;
 
-    public MainWindow()
+    /// <summary>
+    /// The parameterless constructor App.axaml.cs actually uses — kept as a distinct, genuinely
+    /// zero-argument overload rather than a default parameter value on the one below, because
+    /// Avalonia's XAML runtime loader (<c>avares://</c> resource resolution, used by the previewer/
+    /// hot reload) specifically requires a public constructor with no parameters at all to consider
+    /// this XAML reachable; a defaultable parameter doesn't satisfy that (confirmed by the
+    /// <c>AVLN3001</c> build warning that appeared the one time this was tried).
+    /// </summary>
+    public MainWindow() : this(null)
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="databasePath"/> mirrors <see cref="DownloadQueueService"/>'s own constructor
+    /// override — null (what the parameterless constructor above always passes) means the real
+    /// %AppData%-pointed <c>queue.db</c>. Previously there was no override at all (see this class's
+    /// "Known gap" note in CLAUDE.md); added specifically so window-level interaction tests like
+    /// <c>MainWindowNavigationTests</c> can construct a real <see cref="MainWindow"/> against a temp
+    /// database instead of the actual user's queue.
+    /// </summary>
+    public MainWindow(string? databasePath)
     {
         InitializeComponent();
         Icon = App.CurrentIcon;
 
-        _queue = new DownloadQueueService(_ytDlp);
+        _queue = new DownloadQueueService(_ytDlp, databasePath);
         _queue.ItemChanged += OnQueueItemChanged;
 
         LstQueue.ItemsSource = _items;
@@ -253,16 +273,22 @@ public partial class MainWindow : Window
     /// plain owned <c>Button</c>, <c>IsVisible</c>-toggled the same way <c>DownloadsBody</c>/
     /// <c>SettingsBody</c> already are, so it doesn't touch that broken reservation at all.
     ///
-    /// <c>NavView.SelectedItem = null</c> below (there's no "Downloads" item to select instead — see
-    /// <see cref="NavView_SelectionChanged"/>) is purely cosmetic bookkeeping to un-highlight the
-    /// built-in Settings entry. The deferral-to-next-tick and targeted catch around it predate this
-    /// button: back when this was <c>FANavigationView</c>'s own built-in back button, the equivalent
-    /// assignment crashed in production with a <see cref="NullReferenceException"/> deep inside
-    /// FluentAvaloniaUI's own <c>ChangeSelection</c>/<c>RaiseItemInvoked</c>, reentered from inside its
-    /// own <c>OnBackButtonClicked</c> call frame. This click no longer runs inside that specific call
-    /// frame (there's no built-in back button being clicked any more), so the original reentrancy may
-    /// no longer apply — kept the same belt-and-braces protection anyway rather than assuming it's
-    /// safe now without a way to actually click-test it here.
+    /// <c>ClearSettingsSelection</c> below (there's no "Downloads" item to select instead — see
+    /// <see cref="NavView_SelectionChanged"/>) un-highlights the built-in Settings entry so it can be
+    /// opened again. This used to be a single <c>NavView.SelectedItem = null</c>, deferred a tick via
+    /// <c>Dispatcher.UIThread.Post</c> and wrapped in a targeted catch for a
+    /// <see cref="NullReferenceException"/> once seen deep inside FluentAvaloniaUI's own
+    /// <c>ChangeSelection</c>/<c>RaiseItemInvoked</c> — back when this ran inside
+    /// <c>FANavigationView</c>'s own built-in back button's <c>OnBackButtonClicked</c> call frame,
+    /// before this app owned its back button. Real usage after that showed the gear icon staying
+    /// highlighted post-Back, and unable to be clicked open again — reproduced enough to fix, though
+    /// not down to the exact FluentAvaloniaUI internal race (a headless click-simulation harness
+    /// against this real window, per the headless-visual-verification project memory, never once
+    /// caught the underlying exception itself; whatever triggers it needs a live compositor's actual
+    /// animation-frame timing — FluentAvaloniaUI's own <c>AnimateSelectionChanged</c> can defer part
+    /// of its own indicator work to a *later* dispatcher tick when a selection indicator isn't
+    /// realized yet, by its own source comment, which a fast real click could race). See
+    /// <see cref="ClearSettingsSelection"/>'s own doc comment for the two changes this made.
     /// </summary>
     private void BtnBack_Click(object? sender, RoutedEventArgs e)
     {
@@ -270,17 +296,40 @@ public partial class MainWindow : Window
         SettingsBody.IsVisible = false;
         BtnBack.IsVisible = false;
 
-        Dispatcher.UIThread.Post(() =>
+        ClearSettingsSelection();
+    }
+
+    /// <summary>
+    /// Two changes from the version this replaced (see <see cref="BtnBack_Click"/>'s doc comment for
+    /// the bug that prompted them):
+    ///
+    /// 1. Runs synchronously instead of deferred via <c>Dispatcher.UIThread.Post</c>. The deferral
+    ///    predated this app's own <c>BtnBack</c> — it protected against reentering FluentAvaloniaUI's
+    ///    own back-button click-handler call frame, which no longer exists now that this button is
+    ///    ours. Deferring instead left an extra async gap in which FluentAvaloniaUI's own pending
+    ///    "retry the selection indicator next tick" continuation (see this method's own source
+    ///    comment on why it exists) could land *after* ours and re-assert a stale selected/highlighted
+    ///    visual. Running this the moment Back is clicked, with no gap of our own, removes that window
+    ///    entirely.
+    /// 2. Forces <c>NavView.SettingsItem.IsSelected = false</c> directly, unconditionally — the same
+    ///    low-level flag FluentAvaloniaUI's own <c>ChangeSelectStatusForItem</c> sets internally to
+    ///    drive the highlight — as a backstop that doesn't depend on <c>ChangeSelection</c>'s own
+    ///    animation pipeline running to completion.
+    /// </summary>
+    private void ClearSettingsSelection()
+    {
+        try
         {
-            try
-            {
-                NavView.SelectedItem = null;
-            }
-            catch (NullReferenceException)
-            {
-                // See doc comment above — cosmetic only, the actual page swap above already happened.
-            }
-        });
+            NavView.SelectedItem = null;
+        }
+        catch (NullReferenceException)
+        {
+            // See BtnBack_Click's doc comment — the IsSelected force-set below still runs regardless,
+            // so the highlight is cleared even when this throws.
+        }
+
+        if (NavView.SettingsItem is { } settingsItem)
+            settingsItem.IsSelected = false;
     }
 
     private async void BtnAddDownload_Click(object? sender, RoutedEventArgs e)
