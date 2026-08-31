@@ -153,7 +153,7 @@ public sealed class YtDlpClient
         try
         {
             using var process = CreateProcess(["--version"]);
-            process.Start();
+            StartProcess(process);
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
             return process.ExitCode == 0;
         }
@@ -281,7 +281,7 @@ public sealed class YtDlpClient
 
         try
         {
-            process.Start();
+            StartProcess(process);
         }
         catch (Win32Exception ex)
         {
@@ -435,7 +435,7 @@ public sealed class YtDlpClient
 
         try
         {
-            process.Start();
+            StartProcess(process);
         }
         catch (Win32Exception ex)
         {
@@ -501,6 +501,7 @@ public sealed class YtDlpClient
             FileName = _executablePath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = true,
             UseShellExecute = false,
             CreateNoWindow = true,
         };
@@ -517,5 +518,23 @@ public sealed class YtDlpClient
             startInfo.ArgumentList.Add(argument);
 
         return new Process { StartInfo = startInfo };
+    }
+
+    /// <summary>
+    /// Starts <paramref name="process"/> and immediately closes its stdin. Without this, yt-dlp (and
+    /// any child it spawns, e.g. ffmpeg for merging) inherits Yoink's own stdin — a real, open,
+    /// never-EOF stream whenever Yoink itself is run from a terminal or an IDE's run console (as this
+    /// repo's own `dotnet run --project Yoink` workflow does). If yt-dlp or ffmpeg ever blocks on a
+    /// stdin read for any reason (an interactive confirmation, say), it then hangs forever with
+    /// nobody watching that terminal to answer it — observed in practice as an item whose file had
+    /// already finished downloading (no leftover `.part`) but which never left its `Active` status,
+    /// because <c>WaitForExitAsync</c> was still waiting on a yt-dlp process that itself never
+    /// exited. Closing stdin up front means any such read gets an instant EOF instead, so the tool
+    /// fails fast rather than blocking.
+    /// </summary>
+    private static void StartProcess(Process process)
+    {
+        process.Start();
+        process.StandardInput.Close();
     }
 }
