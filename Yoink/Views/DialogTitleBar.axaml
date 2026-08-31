@@ -1,0 +1,32 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:chrome="using:Avalonia.Controls.Chrome"
+             x:Class="Yoink.Views.DialogTitleBar">
+
+    <!-- The shared title-bar strip for every WindowDecorations="None" popup (AddDownloadDialog,
+         MessageBoxWindow, UpdatePromptDialog) — reused rather than each dialog wiring its own copy
+         of the same drag/close handlers, so the three read as one consistent chrome instead of each
+         looking hand-rolled slightly differently. Same building blocks as MainWindow's own title bar
+         (Button.CaptionButton/CloseButton, Path.CaptionGlyph, all styled in App.axaml), just without
+         the icon/wordmark or Settings tab a real window shell needs — these are fixed-size modals,
+         so there's no minimize/maximize row either, only close. -->
+    <Grid ColumnDefinitions="*,Auto" Height="40" Background="Transparent">
+        <!-- The drag region is scoped to just this column (the title text), not the whole row —
+             mirroring how MainWindow's own TitleBarDragHandle only wraps its icon+wordmark, with
+             CaptionButtons living outside it as a separate sibling. Wiring PointerPressed on the
+             full-row Grid instead (this control's original shape) meant a press on the close button
+             below also reached BeginMoveDrag, which grabs pointer capture for the OS-level window
+             drag before the Button's own press-then-release sequence could complete — so Click never
+             fired and the X never actually closed anything. Reproduced by clicking it for real, not
+             assumed from the XAML compiling. -->
+        <Border Grid.Column="0" Background="Transparent"
+                chrome:WindowDecorationProperties.ElementRole="TitleBar"
+                PointerPressed="TitleBarRow_PointerPressed">
+            <TextBlock Name="TxtTitle" FontSize="16" FontWeight="SemiBold"
+                       Margin="16,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        </Border>
+        <Button Grid.Column="1" Classes="CaptionButton CloseButton" Click="BtnClose_Click" ToolTip.Tip="Close">
+            <Path Classes="CaptionGlyph" Data="M 0,0 L 10,10 M 0,10 L 10,0" />
+        </Button>
+    </Grid>
+</UserControl>
