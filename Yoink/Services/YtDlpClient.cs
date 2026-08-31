@@ -154,11 +154,18 @@ public sealed class YtDlpClient
         {
             using var process = CreateProcess(["--version"]);
             StartProcess(process);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            await WaitForExitOrStallAsync(process, new ActivityTracker(), DefaultStallTimeout, cancellationToken)
+                .ConfigureAwait(false);
             return process.ExitCode == 0;
         }
         catch (Win32Exception)
         {
+            return false;
+        }
+        catch (TimeoutException)
+        {
+            // A hung "--version" call is just as much a "not usable" signal as one that never
+            // started at all — see WaitForExitOrStallAsync.
             return false;
         }
     }
@@ -244,6 +251,14 @@ public sealed class YtDlpClient
     /// it actually uses. Defaults to "mp4" to match this method's behavior before the option
     /// existed.
     /// </param>
+    /// <param name="stallTimeout">
+    /// Defense-in-depth backstop, independent of <see cref="CreateProcess"/>'s stdin fix: if yt-dlp
+    /// (or a child it spawns, e.g. ffmpeg during a merge) produces zero stdout/stderr output for this
+    /// long without exiting, it's killed and this throws <see cref="TimeoutException"/> rather than
+    /// hanging forever — see <see cref="WaitForExitOrStallAsync"/>. Null means
+    /// <see cref="DefaultStallTimeout"/>; only overridden by Yoink.Tests, which need a much shorter
+    /// value to exercise this without a multi-minute test run.
+    /// </param>
     public async Task DownloadAsync(
         string url,
         string formatSelector,
@@ -252,6 +267,7 @@ public sealed class YtDlpClient
         int? rateLimitKBps = null,
         string containerFormat = "mp4",
         IProgress<YtDlpDownloadProgress>? progress = null,
+        TimeSpan? stallTimeout = null,
         CancellationToken cancellationToken = default)
     {
         var directory = Path.GetDirectoryName(destinationPath);
@@ -289,19 +305,13 @@ public sealed class YtDlpClient
                 "Could not run yt-dlp. Make sure it's installed and available on PATH.", ex);
         }
 
+        var activity = new ActivityTracker();
         var stderr = new StringBuilder();
-        var stderrTask = DrainAsync(process.StandardError, stderr, cancellationToken);
-        var stdoutTask = DrainStdOutForProgressAsync(process.StandardOutput, expectedSegmentCount, progress, cancellationToken);
+        var stderrTask = DrainAsync(process.StandardError, stderr, cancellationToken, activity.Mark);
+        var stdoutTask = DrainStdOutForProgressAsync(process.StandardOutput, expectedSegmentCount, progress, cancellationToken, activity.Mark);
 
-        try
-        {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKill(process);
-            throw;
-        }
+        await WaitForExitOrStallAsync(process, activity, stallTimeout ?? DefaultStallTimeout, cancellationToken)
+            .ConfigureAwait(false);
 
         // yt-dlp itself exiting is what actually determines success/failure — don't keep
         // blocking on the stdout/stderr pipes reaching EOF past this point. yt-dlp's merge step
@@ -333,7 +343,8 @@ public sealed class YtDlpClient
         StreamReader reader,
         int expectedSegmentCount,
         IProgress<YtDlpDownloadProgress>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? onLine = null)
     {
         var totalFiles = Math.Max(expectedSegmentCount, 1);
         var fileIndex = 0;
@@ -350,6 +361,8 @@ public sealed class YtDlpClient
         string? line;
         while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
         {
+            onLine?.Invoke();
+
             if (line.StartsWith("[download] Destination:", StringComparison.Ordinal) ||
                 line.StartsWith("[download] Resuming download", StringComparison.Ordinal))
             {
@@ -443,19 +456,19 @@ public sealed class YtDlpClient
                 "Could not run yt-dlp. Make sure it's installed and available on PATH.", ex);
         }
 
+        // stdout has no per-line activity signal here (ReadToEndAsync only completes once fully
+        // read, unlike DownloadAsync's line-by-line drain) — stderr-only activity tracking is a
+        // best-effort backstop for this call specifically. yt-dlp's metadata/`--dump-json` calls
+        // never spawn ffmpeg, so they don't carry the lingering-child-holds-the-pipe-open risk
+        // DownloadAsync's grace period exists for; a stall here almost certainly means yt-dlp
+        // itself is stuck (e.g. a network hang), which the watchdog below still catches.
+        var activity = new ActivityTracker();
         var stdErr = new StringBuilder();
-        var stdErrTask = DrainAsync(process.StandardError, stdErr, cancellationToken);
+        var stdErrTask = DrainAsync(process.StandardError, stdErr, cancellationToken, activity.Mark);
         var stdOutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
 
-        try
-        {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKill(process);
-            throw;
-        }
+        await WaitForExitOrStallAsync(process, activity, DefaultStallTimeout, cancellationToken)
+            .ConfigureAwait(false);
 
         var stdOut = await stdOutTask.ConfigureAwait(false);
         await stdErrTask.ConfigureAwait(false);
@@ -466,11 +479,14 @@ public sealed class YtDlpClient
         return stdOut;
     }
 
-    private static async Task DrainAsync(StreamReader reader, StringBuilder into, CancellationToken cancellationToken)
+    private static async Task DrainAsync(StreamReader reader, StringBuilder into, CancellationToken cancellationToken, Action? onLine = null)
     {
         string? line;
         while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+        {
             into.AppendLine(line);
+            onLine?.Invoke();
+        }
     }
 
     /// <summary>Internal (not private) so Yoink.Tests can exercise it directly.</summary>
@@ -491,6 +507,125 @@ public sealed class YtDlpClient
         catch
         {
             // Best-effort — the process may have already exited between the check and the kill.
+        }
+    }
+
+    /// <summary>
+    /// How long a yt-dlp invocation can produce zero stdout/stderr output before
+    /// <see cref="WaitForExitOrStallAsync"/> gives up on it and kills it. This is a backstop, not the
+    /// primary fix, for a real, confirmed bug: an item whose file had already finished downloading
+    /// (no leftover `.part`) sat "Active" forever because yt-dlp's own process never exited —
+    /// <c>WaitForExitAsync</c> was still waiting on a process that itself was hung, most likely on a
+    /// blocked stdin read (see <see cref="CreateProcess"/>'s stdin redirect, the primary fix for
+    /// that). This exists so *any other* cause of the same symptom still surfaces as a clear,
+    /// actionable failure instead of the item sitting stuck forever with no way out but a manual
+    /// cancel. Five minutes comfortably covers a legitimate silent stretch (e.g. ffmpeg re-encoding
+    /// a large file during a merge print nothing until it's done) while still being short enough
+    /// that a genuinely hung download doesn't strand a user indefinitely.
+    /// </summary>
+    private static readonly TimeSpan DefaultStallTimeout = TimeSpan.FromMinutes(5);
+
+    /// <summary>Tracks the last time any stdout/stderr line arrived, for <see cref="WaitForExitOrStallAsync"/>.</summary>
+    private sealed class ActivityTracker
+    {
+        private long _lastActivityTicks = Environment.TickCount64;
+
+        public void Mark() => Interlocked.Exchange(ref _lastActivityTicks, Environment.TickCount64);
+
+        public TimeSpan IdleFor(long nowTicks) =>
+            TimeSpan.FromMilliseconds(nowTicks - Interlocked.Read(ref _lastActivityTicks));
+    }
+
+    /// <summary>
+    /// Pulled out purely so the stall/no-stall decision is testable without spawning a process or
+    /// waiting out a real timeout — same reasoning as <see cref="DownloadQueueService.IsWithinWindow"/>.
+    /// </summary>
+    internal static bool IsStalled(TimeSpan idleFor, TimeSpan stallTimeout) => idleFor >= stallTimeout;
+
+    /// <summary>
+    /// Waits for <paramref name="process"/> to exit, same as a plain <c>WaitForExitAsync</c>, except
+    /// it also kills the process (and throws <see cref="TimeoutException"/> instead of waiting
+    /// forever) if <paramref name="activity"/> reports no stdout/stderr output at all for longer than
+    /// <paramref name="stallTimeout"/> — see <see cref="DefaultStallTimeout"/>'s doc comment for why
+    /// this exists. A genuine external cancellation (<paramref name="cancellationToken"/> itself
+    /// firing) still behaves exactly as before: kill the process and rethrow
+    /// <see cref="OperationCanceledException"/>, letting callers tell the two apart (a user-requested
+    /// pause/cancel is not a stall).
+    /// </summary>
+    private static async Task WaitForExitOrStallAsync(
+        Process process, ActivityTracker activity, TimeSpan stallTimeout, CancellationToken cancellationToken)
+    {
+        using var watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var stalled = 0;
+
+        // Scales down with a short stallTimeout so Yoink.Tests can exercise this in well under a
+        // second rather than waiting out a real multi-minute poll interval; production's 5-minute
+        // default clamps to the 10s ceiling.
+        var pollInterval = TimeSpan.FromMilliseconds(Math.Clamp(stallTimeout.TotalMilliseconds / 5.0, 50, 10_000));
+
+        async Task WatchForStallAsync()
+        {
+            try
+            {
+                while (!process.HasExited)
+                {
+                    await Task.Delay(pollInterval, cancellationToken).ConfigureAwait(false);
+                    if (process.HasExited)
+                        return;
+
+                    if (IsStalled(activity.IdleFor(Environment.TickCount64), stallTimeout))
+                    {
+                        Interlocked.Exchange(ref stalled, 1);
+                        TryKill(process);
+                        watchdogCts.Cancel();
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // cancellationToken itself fired — WaitForExitAsync below is already unwinding.
+            }
+        }
+
+        var watchdogTask = WatchForStallAsync();
+
+        try
+        {
+            try
+            {
+                await process.WaitForExitAsync(watchdogCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (Volatile.Read(ref stalled) == 0)
+            {
+                TryKill(process);
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                // The stall watchdog already killed the process and canceled watchdogCts — the
+                // TimeoutException below is thrown regardless of whether that race lets this
+                // exception surface here or WaitForExitAsync instead just observes the kill as a
+                // normal exit (see the check right after this try/catch for why it isn't only here).
+            }
+        }
+        finally
+        {
+            // Best-effort — the watchdog loop notices process.HasExited on its own next poll tick at
+            // the latest, so this is just tidying up, not something the method needs to block on.
+            await Task.WhenAny(watchdogTask, Task.Delay(TimeSpan.FromMilliseconds(50))).ConfigureAwait(false);
+        }
+
+        // Killing the process (TryKill, above) and canceling watchdogCts happen as two separate
+        // statements, so WaitForExitAsync can win the race and observe the kill as a plain, immediate
+        // exit rather than the cancellation — confirmed by a real test flake, not just theorized.
+        // Checking the flag unconditionally here (rather than only in the catch above) means a stall
+        // is reported as a TimeoutException either way, instead of falling through to DownloadAsync's
+        // own "non-zero exit code" handling and getting misreported as an ordinary yt-dlp failure.
+        if (Volatile.Read(ref stalled) == 1)
+        {
+            throw new TimeoutException(
+                $"yt-dlp produced no output for {stallTimeout} and appeared to be hung, so it was killed.");
         }
     }
 
