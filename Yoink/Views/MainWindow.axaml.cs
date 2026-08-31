@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
@@ -22,6 +23,15 @@ public partial class MainWindow : Window
     private readonly DownloadQueueService _queue;
     private readonly UpdateService _updates = new();
     private readonly ObservableCollection<DownloadQueueItem> _items = new();
+
+    // Id -> _items index, kept in lockstep with _items itself (see OnQueueItemChanged/
+    // LoadQueueAsync, the only two places that mutate either). This queue doubles as download
+    // history and is deliberately never pruned (see DownloadQueueService's doc comment), so a
+    // heavy user's list only grows — without this, every single progress-percent tick for every
+    // active download would rescan the entire history linearly just to find which row to update,
+    // which is the one part of this hot path that's actually frequent (unlike inserting a new row,
+    // which only happens once per download).
+    private readonly Dictionary<long, int> _itemIndexById = new();
 
     // Created once the window is attached to a screen (see MainWindow_Opened) — the clipboard
     // isn't guaranteed to be available any earlier than that.
@@ -101,7 +111,10 @@ public partial class MainWindow : Window
     {
         var all = await _queue.GetAllAsync();
         foreach (var item in all.OrderByDescending(i => i.CreatedAt))
+        {
             _items.Add(item);
+            _itemIndexById[item.Id] = _items.Count - 1;
+        }
 
         UpdateEmptyQueueVisibility();
     }
@@ -247,6 +260,11 @@ public partial class MainWindow : Window
     /// the whole entry is enough — <see cref="DownloadQueueItem"/> doesn't need to implement
     /// INotifyPropertyChanged for the row to refresh.
     ///
+    /// Looks the existing row up via <see cref="_itemIndexById"/> (O(1)) rather than scanning
+    /// <see cref="_items"/> (O(n)) — this fires on every progress-percent tick of every active
+    /// download, so it's the one hot path in this class, on a list that only ever grows (the queue
+    /// doubles as never-pruned download history).
+    ///
     /// This keeps firing — and still notifies on completion (below) — even while the window is
     /// hidden in the tray: closing the window only hides it (see App.axaml.cs), it doesn't
     /// unsubscribe this handler or stop the queue's background loop.
@@ -255,22 +273,27 @@ public partial class MainWindow : Window
     {
         Dispatcher.UIThread.Post(() =>
         {
-            var index = -1;
-            for (var i = 0; i < _items.Count; i++)
+            var isNew = !_itemIndexById.TryGetValue(item.Id, out var index);
+            var previousStatus = isNew ? (DownloadQueueStatus?)null : _items[index].Status;
+
+            if (isNew)
             {
-                if (_items[i].Id == item.Id)
+                // New rows always land at the front (newest-first) — every already-tracked index
+                // shifts by one to match. Rare relative to the plain replace below (once per
+                // enqueue vs. once per progress tick), so an O(n) shift here is the right trade.
+                if (_itemIndexById.Count > 0)
                 {
-                    index = i;
-                    break;
+                    foreach (var id in _itemIndexById.Keys.ToArray())
+                        _itemIndexById[id]++;
                 }
-            }
 
-            var previousStatus = index >= 0 ? _items[index].Status : (DownloadQueueStatus?)null;
-
-            if (index >= 0)
-                _items[index] = item;
-            else
                 _items.Insert(0, item);
+                _itemIndexById[item.Id] = 0;
+            }
+            else
+            {
+                _items[index] = item;
+            }
 
             if (previousStatus != item.Status && item.Status is DownloadQueueStatus.Completed or DownloadQueueStatus.Failed)
                 _ = NotifyDownloadFinishedAsync(item);

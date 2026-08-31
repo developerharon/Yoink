@@ -49,6 +49,10 @@ public sealed class DownloadQueueService : IDisposable
     private readonly CancellationTokenSource _stoppingCts = new();
     private readonly SemaphoreSlim _workAvailable = new(0);
     private readonly ConcurrentDictionary<long, CancellationTokenSource> _activeCancellations = new();
+    // Every ProcessItemAsync task ProcessLoopAsync fires off, so Dispose can actually wait for
+    // them — see Dispose's doc comment for why this is load-bearing, not redundant with
+    // _processingLoop.
+    private readonly ConcurrentDictionary<long, Task> _activeTasks = new();
     private readonly ConcurrentDictionary<long, bool> _pauseRequested = new();
     private readonly ConcurrentDictionary<long, TaskCompletionSource<DownloadQueueItem>> _waiters = new();
     private readonly Task _processingLoop;
@@ -83,8 +87,14 @@ public sealed class DownloadQueueService : IDisposable
 
             var items = new List<DownloadQueueItem>();
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                items.Add(ReadItem(reader));
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var ordinals = ColumnOrdinals.FromReader(reader);
+                do
+                {
+                    items.Add(ReadItem(reader, ordinals));
+                } while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+            }
 
             return (IReadOnlyList<DownloadQueueItem>)items;
         }, cancellationToken);
@@ -252,7 +262,12 @@ public sealed class DownloadQueueService : IDisposable
                 continue;
             }
 
-            _ = ProcessItemAsync(next, stoppingToken);
+            // Tracked in _activeTasks (removed in ProcessItemAsync's own finally, right next to
+            // _activeCancellations' removal) purely so Dispose can wait for it — still
+            // deliberately not awaited here, for the same reason the doc comment above gives:
+            // this loop needs to immediately go check for more capacity, not wait for one
+            // download to finish before considering the next.
+            _activeTasks[next.Id] = ProcessItemAsync(next, stoppingToken);
         }
     }
 
@@ -358,6 +373,7 @@ public sealed class DownloadQueueService : IDisposable
         finally
         {
             _activeCancellations.TryRemove(item.Id, out _);
+            _activeTasks.TryRemove(item.Id, out _);
         }
     }
 
@@ -454,19 +470,42 @@ public sealed class DownloadQueueService : IDisposable
 
     private void RaiseChanged(DownloadQueueItem item) => ItemChanged?.Invoke(item);
 
-    private static DownloadQueueItem ReadItem(SqliteDataReader reader) => new()
+    /// <summary>
+    /// Every <c>SELECT *</c> in this class reads the same fixed <c>download_queue</c> schema, so
+    /// a column's ordinal is the same for every row of one query — <see cref="ReadItem"/> used to
+    /// re-look-up all nine (well, eleven counting the two IsDBNull-then-GetString columns) by name
+    /// on every single row, which is wasted string-hashing work on a queue that's deliberately
+    /// never pruned (it doubles as download history — see this class's own doc comment) and so has
+    /// no upper bound on how many rows <see cref="GetAllAsync"/> reads back at startup. Computing
+    /// this once per query and threading it through instead turns that into nine lookups total,
+    /// not nine per row.
+    /// </summary>
+    private readonly record struct ColumnOrdinals(
+        int Id, int Url, int Title, int Resolution, int FilePath,
+        int Status, int Progress, int ErrorMessage, int Position, int CreatedAt)
     {
-        Id = reader.GetInt64(reader.GetOrdinal("Id")),
-        Url = reader.GetString(reader.GetOrdinal("Url")),
-        Title = reader.GetString(reader.GetOrdinal("Title")),
-        Resolution = reader.GetInt32(reader.GetOrdinal("Resolution")),
-        FilePath = reader.IsDBNull(reader.GetOrdinal("FilePath")) ? null : reader.GetString(reader.GetOrdinal("FilePath")),
-        Status = Enum.Parse<DownloadQueueStatus>(reader.GetString(reader.GetOrdinal("Status"))),
-        Progress = reader.GetDouble(reader.GetOrdinal("Progress")),
-        ErrorMessage = reader.IsDBNull(reader.GetOrdinal("ErrorMessage")) ? null : reader.GetString(reader.GetOrdinal("ErrorMessage")),
-        Position = reader.GetInt32(reader.GetOrdinal("Position")),
+        public static ColumnOrdinals FromReader(SqliteDataReader reader) => new(
+            reader.GetOrdinal("Id"), reader.GetOrdinal("Url"), reader.GetOrdinal("Title"),
+            reader.GetOrdinal("Resolution"), reader.GetOrdinal("FilePath"), reader.GetOrdinal("Status"),
+            reader.GetOrdinal("Progress"), reader.GetOrdinal("ErrorMessage"), reader.GetOrdinal("Position"),
+            reader.GetOrdinal("CreatedAt"));
+    }
+
+    private static DownloadQueueItem ReadItem(SqliteDataReader reader) => ReadItem(reader, ColumnOrdinals.FromReader(reader));
+
+    private static DownloadQueueItem ReadItem(SqliteDataReader reader, ColumnOrdinals o) => new()
+    {
+        Id = reader.GetInt64(o.Id),
+        Url = reader.GetString(o.Url),
+        Title = reader.GetString(o.Title),
+        Resolution = reader.GetInt32(o.Resolution),
+        FilePath = reader.IsDBNull(o.FilePath) ? null : reader.GetString(o.FilePath),
+        Status = Enum.Parse<DownloadQueueStatus>(reader.GetString(o.Status)),
+        Progress = reader.GetDouble(o.Progress),
+        ErrorMessage = reader.IsDBNull(o.ErrorMessage) ? null : reader.GetString(o.ErrorMessage),
+        Position = reader.GetInt32(o.Position),
         CreatedAt = DateTimeOffset.Parse(
-            reader.GetString(reader.GetOrdinal("CreatedAt")), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+            reader.GetString(o.CreatedAt), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
     };
 
     /// <summary>
@@ -535,6 +574,19 @@ public sealed class DownloadQueueService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Cancels the processing loop and every in-flight download, then actually waits for them to
+    /// unwind before releasing anything else — not just <see cref="_processingLoop"/>. That used
+    /// to be the only thing waited on here, which is a real gap: <see cref="ProcessLoopAsync"/>
+    /// fires each <see cref="ProcessItemAsync"/> without awaiting it (deliberately — see that
+    /// method's doc comment), so canceling <see cref="_stoppingCts"/> makes the *loop* return
+    /// almost immediately while the downloads it started are still unwinding independently on
+    /// their own tasks — still holding a live yt-dlp/ffmpeg child process at the moment this
+    /// method would otherwise have returned. <see cref="_activeTasks"/> exists purely so those
+    /// get waited on too, so the yt-dlp process is actually confirmed killed (via
+    /// <c>YtDlpClient</c>'s own cancellation-triggered <c>TryKill</c>) before the app can exit out
+    /// from under it and orphan it.
+    /// </summary>
     public void Dispose()
     {
         _stoppingCts.Cancel();
@@ -543,7 +595,9 @@ public sealed class DownloadQueueService : IDisposable
 
         try
         {
-            _processingLoop.Wait(TimeSpan.FromSeconds(5));
+            var pending = new List<Task>(_activeTasks.Count + 1) { _processingLoop };
+            pending.AddRange(_activeTasks.Values);
+            Task.WaitAll(pending.ToArray(), TimeSpan.FromSeconds(5));
         }
         catch
         {
