@@ -21,10 +21,10 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Restore
-        run: dotnet restore Yoink.sln
+        run: dotnet restore Yoink.slnx
 
       - name: Build
-        run: dotnet build Yoink.sln --configuration Release --no-restore
+        run: dotnet build Yoink.slnx --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test Yoink.sln --configuration Release --no-build --logger "console;verbosity=normal"
+        run: dotnet test Yoink.slnx --configuration Release --no-build --logger "console;verbosity=normal"

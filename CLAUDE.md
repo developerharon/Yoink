@@ -20,9 +20,9 @@ with it.
 
 SDK-style project, so the regular `dotnet` CLI works directly — no MSBuild/NuGet workarounds needed.
 
-- Build: `dotnet build Yoink.sln`
+- Build: `dotnet build Yoink.slnx`
 - Run: `dotnet run --project Yoink`
-- Test: `dotnet test Yoink.sln`
+- Test: `dotnet test Yoink.slnx`
 
 There is no lint command/config in this repo. `Yoink.Tests` (xUnit v3 — see its own "Key dependency"
 note below for why v3 specifically, not the more commonly-seen v2) is the test project; CI
