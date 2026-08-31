@@ -4,11 +4,14 @@
         xmlns:converters="using:Yoink.Converters"
         xmlns:views="using:Yoink.Views"
         xmlns:ui="using:FluentAvalonia.UI.Controls"
+        xmlns:chrome="using:Avalonia.Controls.Chrome"
         x:Class="Yoink.Views.MainWindow"
         Title="Yoink"
         Width="760" Height="640"
         MinWidth="640" MinHeight="520"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        ExtendClientAreaToDecorationsHint="True"
+        ExtendClientAreaTitleBarHeightHint="48">
 
     <!-- The app shell: a top nav bar (icon+wordmark, plus FluentAvalonia's built-in Settings entry —
          no menu item for Downloads, since that's the home/dashboard, not something you navigate to)
@@ -16,7 +19,13 @@
          NavView_SelectionChanged/NavView_BackRequested in the code-behind. Settings used to be a
          separate modal Window; it's a page in this same shell now, with the nav bar's own back
          button as the way out (shown only while on that page — Downloads has nowhere to go "back"
-         from), so it actually feels like part of the app. -->
+         from), so it actually feels like part of the app.
+
+         This same top row also doubles as the window's own title bar (ExtendClientAreaToDecorationsHint
+         above) rather than sitting below a separate native one — see MainWindow_Opened's
+         WindowDecorationMargin subscription in the code-behind for how the icon+wordmark stay clear
+         of the system-drawn min/max/close (Windows) / traffic lights (macOS), which render in
+         whichever corner is native to that platform without any per-OS code here. -->
     <ui:FANavigationView x:Name="NavView"
                          PaneDisplayMode="Top"
                          IsSettingsVisible="True"
@@ -29,7 +38,13 @@
              FluentAvaloniaUI 3.1.0's Top-mode template simply never presents PaneHeader/PaneTitle at
              all; PaneCustomContent is the slot that actually renders on the left in this mode. -->
         <ui:FANavigationView.PaneCustomContent>
-            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="12,0,20,0">
+            <!-- chrome:WindowDecorationProperties.ElementRole="TitleBar" is what makes this specific
+                 area drag-to-move/double-click-to-maximize now that it's sharing the window's own
+                 title bar row — the one guaranteed draggable spot, the same way the icon/title area
+                 is in every app that merges its title bar with a tab or nav strip. -->
+            <StackPanel Name="TitleBarDragHandle" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center" Margin="12,0,20,0"
+                        chrome:WindowDecorationProperties.ElementRole="TitleBar">
                 <Path Classes="YoinkMark" Width="22" Height="22" StrokeThickness="2"
                       Stroke="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
                 <TextBlock Text="Yoink" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />

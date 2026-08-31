@@ -135,6 +135,30 @@ project root — that's exactly the flat structure this reorg moved away from.
   un-highlight the Settings entry (there's no "Downloads" item to select instead). Neither page needs
   anything handed back when the other is shown — every setting is read fresh at the point it's needed
   regardless of which page is currently visible (see `SettingsView` below).
+  - **This same top row doubles as the window's own title bar**, rather than sitting below a separate
+    native one: the root `Window` sets `ExtendClientAreaToDecorationsHint="True"` (plus
+    `ExtendClientAreaTitleBarHeightHint="48"`, tuned to roughly match the nav row's own rendered
+    height), and `PaneCustomContent`'s icon+wordmark `StackPanel` carries
+    `Avalonia.Controls.Chrome.WindowDecorationProperties.ElementRole="TitleBar"` so that area supports
+    native drag-to-move/double-click-to-maximize. `WindowDecorationMargin` (subscribed to via
+    `PropertyChanged` in the constructor, applied straight onto `NavView.Margin`) reports how much
+    space the system reserves for its own caption buttons — right-side width for min/max/close on
+    Windows, left-side width for the macOS traffic lights — so the icon/wordmark/Settings tab never
+    render underneath them, with no per-platform branching needed in this codebase at all. `NavView`
+    is margined rather than padded specifically because `FANavigationView.Padding` (inherited from
+    `TemplatedControl`) was tried first and, verified via a throwaway headless render, has **no
+    effect** on the Top-mode pane row at all in FluentAvaloniaUI 3.1.0 — `Margin` on the whole control
+    does shift the pane row (and, as a side effect, narrows the body content area by the same sliver
+    on that edge while the window is extended, an accepted trade-off rather than fighting
+    `FANavigationView`'s own template further). This also means `MainWindow` deliberately stayed a
+    plain `Window`, not FluentAvaloniaUI's own `FluentAvalonia.UI.Windowing.FAAppWindow` — reflecting
+    the actually-installed 3.1.0 DLL showed its `AppWindowTitleBar` lacks the `LeftInset`/`RightInset`/
+    `SetDragRectangles`/`TitleBarHitTestType` members its current online docs describe (version drift,
+    the same class of gotcha as the `PaneHeader` one above), and switching base classes would also
+    change `Icon`'s type from `WindowIcon` (what `App.CurrentIcon`/`ApplyAccent` push everywhere) to
+    `IImage` for no benefit here. Real native chrome (exact button rendering, macOS traffic-light
+    position) can't be verified headless — see the `headless-visual-verification` memory — and needs a
+    real windowed run on each platform to confirm.
   - The queue view itself (`DownloadsBody`) is unchanged in substance from before this shell existed: an
     `ItemsControl` bound to an `ObservableCollection<DownloadQueueItem>`, one row per queue entry (title,
     status, a progress bar when active/paused, and Pause/Resume/Cancel/Retry/"Show in folder" buttons —

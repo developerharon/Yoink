@@ -48,6 +48,22 @@ public partial class MainWindow : Window
         LstQueue.ItemsSource = _items;
         UpdateEmptyQueueVisibility();
 
+        // Now that the nav bar doubles as the window's own title bar (ExtendClientAreaToDecorationsHint
+        // in MainWindow.axaml), WindowDecorationMargin reports how much space the system reserves for
+        // its own caption buttons — right-side width for min/max/close on Windows, left-side width for
+        // the traffic lights on macOS, verified empirically (a throwaway headless harness, not guessed)
+        // to keep applying as NavView shrinks/grows: NavView is the window's whole content (top strip
+        // and body both), so margining it in reserves the space *and* moves the Settings tab clear of
+        // it, at the cost of the body area losing the same sliver on that edge — an acceptable trade
+        // for not fighting FANavigationView's own Top-mode template (setting its Padding instead, the
+        // more obviously "should work" option, was tried and confirmed to have no effect at all).
+        NavView.Margin = WindowDecorationMargin;
+        PropertyChanged += (_, e) =>
+        {
+            if (e.Property == WindowDecorationMarginProperty)
+                NavView.Margin = (Thickness)e.NewValue!;
+        };
+
         Opened += MainWindow_Opened;
 
         _ = LoadQueueAsync();
