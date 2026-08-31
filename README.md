@@ -1,8 +1,11 @@
 # Yoink
 
-Grab a video, keep watching. Yoink is a free, open source download manager — it started as a YouTube
+Grab a video, keep watching. Yoink is a free, source-available download manager — it started as a YouTube
 downloader and is growing into a general-purpose one, built to feel like a real desktop app on Linux rather
 than an afterthought next to Windows.
+
+It's a hobby project, built purely because making it was fun — see [License](#license) below for what that
+means for how you can use it.
 
 ## What it is
 
@@ -69,3 +72,15 @@ it's missing.
 You can clone it and improve it, create a new branch and work on it, or contribute in any other way.
 
 Please comment and contribute to the project — I'm definitely not a pro, lol.
+
+## License
+
+Yoink is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md) — free to use, modify, fork,
+and share for any noncommercial purpose, but not to sell or build a paid product or service on top of. I
+built this purely for fun, and I want it to stay a free gift to anyone who wants it, not something someone
+else profits from.
+
+That restriction is why it's "source-available" above rather than "open source" — the
+[Open Source Definition](https://opensource.org/osd) requires letting anyone use software commercially too,
+which this license deliberately doesn't. Full terms: [LICENSE.md](LICENSE.md), or the license's own page at
+[polyformproject.org](https://polyformproject.org/licenses/noncommercial/1.0.0).
