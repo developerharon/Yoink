@@ -51,16 +51,24 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
 - `Services/DownloadQueueServiceTests` — real `DownloadQueueService` instances against a temp SQLite
   file (its constructor already accepts a `databasePath` override, so this needed no production
   change): Enqueue/GetAll/Reorder/Pause/Resume/Cancel/Retry, plus an end-to-end
-  `EnqueueAndWaitAsync` test that lets the real background loop run against the real (but genuinely
-  absent in this environment and on GitHub's runners) `yt-dlp`, verifying it reaches `Failed` and
-  throws rather than hanging — see the class's own doc comment for why yt-dlp being missing is
-  actually *useful* here rather than a gap. `YtDlpClient` is sealed with no interface, so it can't be
-  faked; the CRUD-focused tests instead close the schedule window (`SchedulingEnabled=true`,
+  `EnqueueAndWaitAsync` test that lets the real background loop run against a real `YtDlpClient`
+  pointed (via `UseResolvedPaths`) at a path that can't exist, verifying it reaches `Failed` and throws
+  rather than hanging. Used to rely on yt-dlp being genuinely absent from PATH in this environment for
+  that instead — broke the moment yt-dlp actually got installed here to fix real downloads (see
+  `DependencyProvisioningService` above), which is exactly why it was made deterministic instead of
+  environment-dependent. `YtDlpClient` is sealed with no interface, so it can't be faked otherwise; the
+  CRUD-focused tests instead close the schedule window (`SchedulingEnabled=true`,
   `ScheduleStart == ScheduleEnd`, which `IsWithinWindowTests.ZeroWidthWindow_IsNeverWithin` confirms is
   never "within") so the background loop never dequeues anything mid-test, rather than racing it.
 - `Services/ClipboardWatcherServiceTests` — the real background poll loop (given a fast poll interval)
   against fake clipboard-read/is-enabled delegates: every recognized YouTube URL shape, negative cases,
   fires-once-per-change, and respects the enabled/disabled delegate.
+- `Services/DependencyProvisioningServiceTests` — just `ParseYtDlpVersionFromRedirect` (the one pure/
+  isolable piece; everything else on that class talks to the network or spawns processes, so it isn't
+  covered by the automated suite — it was instead verified for real, once, in the session that added
+  it: a genuine download+extract of both yt-dlp and ffmpeg with PATH deliberately hidden, running
+  `--version`/`-version` on the results, and a real `YtDlpClient.GetVideoInfoAsync` call through the
+  managed ffmpeg — see that class's own doc comment).
 - `Services/YtDlpClientParsingTests` — `ParseVideoInfo`/`ParsePlaylistEntryLine` against sample yt-dlp
   JSON (no process spawned), `ExtractErrorSummary`, and `TryParseProgressPercent` (pulled out of
   `DownloadAsync`'s stdout loop, which now calls this rather than duplicating the regex match, so the
@@ -229,10 +237,29 @@ project root — that's exactly the flat structure this reorg moved away from.
     transitions *into* `Completed`/`Failed` (comparing against the replaced item's previous status, not on
     every progress tick or on items loaded at startup) — the notifications half of roadmap step 6.
   - The constructor also fires `CheckForUpdatesAsync` — see `UpdateService`/`UpdatePromptDialog` below.
-- `AddDownloadDialog.axaml` / `.axaml.cs` — the "add download" dialog half of step 4: URL + resolution
-  picker, calls `DownloadQueueService.EnqueueAsync` directly and closes. Shown via the static
-  `AddDownloadDialog.ShowAsync(owner, queue, prefillUrl)`, same pattern as `MessageBoxWindow.ShowAsync`.
-  `prefillUrl` is optional — the clipboard watcher (above) is the only caller that passes one.
+- `AddDownloadDialog.axaml` / `.axaml.cs` — the "add download" dialog half of step 4, redesigned around
+  a real user-reported problem: it used to queue a bare URL immediately and only resolve the video's
+  title/formats later, in the background, once `DownloadQueueService`'s processing loop actually
+  dequeued it — a multi-second yt-dlp round trip with nothing in the UI explaining the pause, and a
+  fixed, guessed resolution list (topping out at 1440p, no 4K option at all) rather than what that
+  specific video actually offers. Now a three-stage flow, one `StackPanel` per stage toggled via
+  `IsVisible` (`PanelUrlEntry`/`PanelLoading`/`PanelOptions` — same pattern `MainWindow` already uses
+  for `DownloadsBody`/`SettingsBody`, tracked by a private `Stage` enum field): paste a URL and click
+  "Continue" → `PanelLoading` (an indeterminate `ProgressBar` + "Resolving video info…") while
+  `YtDlpClient.GetVideoInfoAsync` actually runs → `PanelOptions`, populated with every distinct height
+  yt-dlp reported a video-capable format for (`YtDlpFormat.HasVideo`, deduped, highest first — real
+  data per-video, not a guess) plus an MP4/MKV container choice, and the button becomes "Add to queue".
+  Passing the already-resolved title through to `DownloadQueueService.EnqueueAsync`'s new optional
+  `title`/`containerFormat` parameters means the background loop's own `if (string.IsNullOrEmpty(item.Title))`
+  check (in `ProcessItemAsync`) skips its redundant second metadata fetch entirely, so the actual
+  download starts the moment the item is dequeued rather than pausing to look the title up again.
+  Shown via the static `AddDownloadDialog.ShowAsync(owner, queue, ytDlp, prefillUrl)` — now also takes
+  the shared `YtDlpClient` instance (`Views.MainWindow`'s own `_ytDlp`, already pointed at whatever
+  `DependencyProvisioningService` resolved) so the dialog can resolve videos itself, same pattern as
+  `MessageBoxWindow.ShowAsync`. `prefillUrl` is optional — the clipboard watcher (above) is the only
+  caller that passes one, and even then the user still clicks "Continue" themselves (detection and
+  action stay separate, as `OnClipboardUrlDetected`'s own doc comment already established — this
+  redesign didn't change that).
 - `UpdatePromptDialog.axaml` / `.axaml.cs` — the update/distribution story's UI half (see `UpdateService`
   below for the mechanism). Shows the new version + release notes with "Install Update"/"Later" buttons;
   clicking "Install Update" downloads (progress bar, reusing the same pattern as everywhere else) then
@@ -296,7 +323,9 @@ project root — that's exactly the flat structure this reorg moved away from.
   step: plain, non-YouTube direct-link downloads (e.g. the browser-extension/clipboard-watching "auto-catch"
   step).
 - `YtDlpClient.cs` — the YouTube extraction layer from README roadmap step 2. Shells out to the `yt-dlp`
-  CLI (must be on PATH — see README) for everything that talks to YouTube: `GetVideoInfoAsync` (title +
+  CLI — resolved via `UseResolvedPaths` (see `DependencyProvisioningService` below) to either a PATH
+  lookup or a Yoink-managed copy, defaulting to a bare PATH lookup until that runs — for everything that
+  talks to YouTube: `GetVideoInfoAsync` (title +
   available formats), `GetPlaylistEntriesAsync` (flat playlist/channel expansion), and `DownloadAsync`
   (download **and**, via ffmpeg, mux separate video-only/audio-only streams into one file — YouTube mostly
   doesn't serve pre-muxed formats above a low resolution anymore). `DownloadAsync` also takes an optional
@@ -307,7 +336,57 @@ project root — that's exactly the flat structure this reorg moved away from.
   (`YtDlpFormat`/`YtDlpVideoInfo`/`YtDlpPlaylistEntry`) in the same file rather than under `Models/` —
   they're yt-dlp's own JSON contract, not app-wide models. See the class doc comment for why
   extraction/download is delegated to yt-dlp rather than reimplemented (same "far less maintenance"
-  reasoning the README roadmap calls out) and why that means `DownloadEngine` sits unused for now.
+  reasoning the README roadmap calls out). `DownloadAsync`'s stdout progress-parsing runs as its own
+  background task (`DrainStdOutForProgressAsync`) rather than a loop the method blocks on directly, the
+  same shape stderr's own `DrainAsync` already used — found and fixed as a real bug, not preemptively:
+  a queued item sat stuck `Active` forever with its final file already fully written and playable on
+  disk. Root cause was the original code calling `WaitForExitAsync` only *after* the stdout-reading loop
+  reached EOF; yt-dlp's ffmpeg merge step is a child process that inherits those same redirected
+  handles, and anything about it lingering even briefly past yt-dlp's own exit keeps the pipe's write
+  end open, so the loop (and everything after it, `WaitForExitAsync` included) waited forever for an
+  EOF that would never come — even though yt-dlp itself, and the actual download, had already finished
+  successfully. Now `WaitForExitAsync` and both drains run concurrently, so yt-dlp's own exit (not the
+  pipe closing) is what actually unblocks the method, with a short grace period to still collect
+  whatever's left buffered. Progress is reported as `YtDlpDownloadProgress` (fraction +
+  `BytesDownloaded`/`TotalBytes`), not a bare fraction — `DrainStdOutForProgressAsync` additionally
+  parses each progress line's own `of X.XXMiB` token (`TryParseTotalBytes`, format confirmed against a
+  real `yt-dlp --newline` run rather than assumed) and accumulates bytes across streams the same way it
+  already tracked `fileIndex` for the fraction; see the type's own doc comment for why the reported
+  total only grows once a later stream's size becomes known rather than reflecting the full combined
+  size from the first line. `DownloadAsync` also takes a `containerFormat` parameter now (default
+  "mp4", passed straight through as `--merge-output-format`) — see `DownloadQueueService`'s notes below
+  for where that comes from.
+- `DependencyProvisioningService.cs` — provisions yt-dlp/ffmpeg for a packaged install so a plain
+  "download the AppImage/Setup.exe and run it" user never has to separately install (or keep updating)
+  either one themselves, added once this became a real problem: this dev environment genuinely had
+  neither installed, surfacing the exact "Could not run yt-dlp" failure a packaged-install user would
+  also hit with nothing on PATH. A system copy already on PATH is always preferred and never touched —
+  this only downloads into (and later updates) its own managed folder (`%AppData%/Yoink/bin`) when
+  nothing already provides the tool, so it never fights a distro's package manager or a developer's
+  manual install. `EnsureProvisionedAsync` resolves both (downloading whichever is missing) and returns
+  a `DependencyPaths` that `Views.MainWindow` feeds straight into `YtDlpClient.UseResolvedPaths` — this
+  is also **the first real consumer of `DownloadEngine`** (see that class's own note above), fetching
+  yt-dlp's plain per-platform binary directly and ffmpeg's archived static builds (extracted via
+  `System.IO.Compression.ZipFile` on Windows/macOS, and by shelling out to the system `tar` on Linux,
+  since .NET has no built-in XZ/LZMA decompressor for BtbN's `.tar.xz` builds — `tar` itself is safe to
+  assume present on essentially any real Linux install). `CheckForManagedUpdatesAsync` re-checks managed
+  copies only, called from `Views.MainWindow.CheckForDependencyUpdatesAsync` on the exact same
+  once-a-day throttle (`AppSettings.LastDependencyCheckUtc`) as `UpdateService`'s own app-update check —
+  deliberately riding the same cadence rather than a second independent timer, since yt-dlp especially
+  needs to stay current (YouTube breaks it every few weeks) for a managed install to keep working at
+  all. yt-dlp's freshness is checked via the version string in GitHub's own release-redirect URL
+  (`ParseYtDlpVersionFromRedirect`, `internal` for `Yoink.Tests`); ffmpeg's static builds don't expose
+  a comparable version, so its freshness is tracked by the downloaded asset's Last-Modified/ETag instead
+  (evermeet.cx's own version field on macOS, which does expose one). Windows/macOS branches are
+  implemented but unverified on real hardware, like the rest of this app's platform-specific code (see
+  `merged-titlebar-navbar` below) — only the Linux path has actually been exercised, end-to-end
+  (download, extract, run `--version`/`-version`, and a real `YtDlpClient.GetVideoInfoAsync` call
+  through the managed ffmpeg) against the real network in this session.
+- `Views/DependencySetupDialog.axaml`/`.axaml.cs` — shown once, the first time
+  `DependencyProvisioningService.NeedsProvisioningAsync` finds something missing everywhere; downloads
+  it with a small status/progress UI (same custom-chrome dialog pattern as `UpdatePromptDialog`) and
+  hands the resolved `DependencyPaths` back to `Views.MainWindow.EnsureDependenciesAsync`, which is what
+  actually calls `YtDlpClient.UseResolvedPaths`. A no-op past the first launch.
 - `DownloadQueueService.cs` (paired with `Models/DownloadQueueItem.cs`) — the persisted download queue from
   README roadmap step 3: SQLite-backed (`queue.db`, same config directory as settings, via
   `Microsoft.Data.Sqlite`), with `Pending`/`Active`/`Paused`/`Completed`/`Failed`/`Canceled` states and
@@ -319,6 +398,19 @@ project root — that's exactly the flat structure this reorg moved away from.
   downloading) re-reads the full row after updating it rather than raising a bare `Id`+`Status` object —
   every `ItemChanged` subscriber, `Views.MainWindow` included, relies on each payload being a complete
   snapshot it can drop straight into place.
+  - **Download progress size (bytes downloaded vs. total)**: `ProcessItemAsync`'s progress callback now
+    consumes `YtDlpDownloadProgress` (see `YtDlpClient` below) instead of a bare fraction, copying its
+    `BytesDownloaded`/`TotalBytes` onto the item alongside `Progress` on every tick — surfaced in
+    `Views.MainWindow` as `DownloadQueueItem.SizeText`/`ShowSize`. Not persisted to `queue.db` (see
+    `DownloadQueueItem`'s own doc comment) — only ever meaningful while genuinely `Active`.
+  - **Container format (mp4/mkv)**: `EnqueueAsync` takes optional `title`/`containerFormat` parameters
+    now (`Views.AddDownloadDialog` is the only caller that passes real values for either — see that
+    view's own notes for why), persisted in a `ContainerFormat` column added via `EnsureColumnExists`
+    (a real `ALTER TABLE`, guarded on the column not already existing, since an existing install's
+    `queue.db` predates this and `CREATE TABLE IF NOT EXISTS` alone wouldn't add it to an already-created
+    table). `BuildDestinationPath` and `YtDlpClient.DownloadAsync` both take a `containerFormat`
+    parameter now too (defaulting to "mp4", matching this app's previous hardcoded behavior exactly for
+    every pre-existing row and caller that doesn't pass one).
   - **Concurrency, speed limits, scheduling (README roadmap step 7)**: `ProcessLoopAsync` now runs up to
     `AppSettings.MaxConcurrentDownloads` items at once, using `_activeCancellations.Count` as the live count
     in flight (populated synchronously by `ProcessItemAsync` before its first await, so the loop's capacity
@@ -400,13 +492,21 @@ project root — that's exactly the flat structure this reorg moved away from.
   `MaxConcurrentDownloads`/`PerDownloadSpeedLimitKBps`/`GlobalSpeedLimitKBps`/`SchedulingEnabled`/
   `ScheduleStart`/`ScheduleEnd` — see each property's doc comment, and `DownloadQueueService`'s notes above,
   for exactly how they combine. `LastUpdateCheckUtc` throttles `UpdateService`/`Views.MainWindow`'s update
-  check to roughly once a day rather than on every launch.
+  check to roughly once a day rather than on every launch. `InstalledYtDlpVersion`/
+  `InstalledFfmpegBuildTag`/`LastDependencyCheckUtc` are `DependencyProvisioningService`'s equivalent for
+  a managed yt-dlp/ffmpeg copy — not surfaced in `Views.SettingsView` (there's nothing for a user to
+  configure here, unlike everything else in this class), just internal bookkeeping so it only
+  re-downloads a managed copy when the upstream build has actually moved on.
 - `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus`. Plain data, no
   `INotifyPropertyChanged` — see the `Views.MainWindow`/`DownloadQueueService` notes above for how the
   queue view stays live without it. Carries presentational computed properties
   (`DisplayTitle`/`Subtitle`/`StatusText`/`ProgressPercent`/`CanPause`/etc.) so the queue view's
   `DataTemplate` can bind directly without converters — the same pattern the old, now-removed
-  `DownloadHistoryEntry` used for the "Recent downloads" list.
+  `DownloadHistoryEntry` used for the "Recent downloads" list. `SizeText`/`ShowSize` are the same idea
+  for the bytes-downloaded/total readout (`DownloadedBytes`/`TotalBytes`, both nullable and never
+  persisted — see their own doc comment); `ContainerFormat` (default `"mp4"`) is what
+  `Views.AddDownloadDialog`'s MP4/MKV picker sets and `YtDlpClient.DownloadAsync` reads back via
+  `DownloadQueueService`.
 
 ### Converters (`Yoink/Converters/`)
 
@@ -436,16 +536,19 @@ project root — that's exactly the flat structure this reorg moved away from.
   proper `.ico`/`.icns` icons — only the Linux leg has been checked against the PNG in `Assets/`). Ordinary
   pushes to `master` don't trigger this at all, only an explicit tag does.
 
-### Key dependency: yt-dlp (external, on PATH)
+### Key dependency: yt-dlp (external, on PATH or Yoink-managed)
 
 All YouTube interaction (metadata, playlist expansion, format listing, downloading, audio+video muxing)
 goes through the `yt-dlp` command-line tool, invoked via `System.Diagnostics.Process` in `YtDlpClient` — not
-a NuGet package. `yt-dlp` (and `ffmpeg`, for muxing) must be installed separately and discoverable on PATH;
-see README.md's "Using it" section. This replaced `YoutubeExplode`, which reimplemented YouTube's
-extraction logic in C# and, like the `YoutubeExtractor`/`YoutubeExtractorCore` packages before it, was prone
-to breaking whenever YouTube changed something server-side (by the time it was replaced, it could no longer
-find muxed streams for most videos at all). `yt-dlp` is maintained specifically to track those changes, which
-per the README roadmap is far less maintenance than reimplementing the same cat-and-mouse game here.
+a NuGet package. `yt-dlp` (and `ffmpeg`, for muxing) no longer has to be installed separately: a copy on
+PATH is used if present, otherwise `DependencyProvisioningService` downloads and manages one itself — see
+that class above and README.md's "Using it" section. This replaced `YoutubeExplode`, which reimplemented
+YouTube's extraction logic in C# and, like the `YoutubeExtractor`/`YoutubeExtractorCore` packages before it,
+was prone to breaking whenever YouTube changed something server-side (by the time it was replaced, it could
+no longer find muxed streams for most videos at all). `yt-dlp` is maintained specifically to track those
+changes, which per the README roadmap is far less maintenance than reimplementing the same cat-and-mouse
+game here — the same reasoning is why `DependencyProvisioningService` re-downloads the latest yt-dlp build
+periodically rather than pinning one: a stale copy would go back to being exactly this problem.
 
 ### Key dependency: Velopack (NuGet package + `vpk` CLI tool)
 
