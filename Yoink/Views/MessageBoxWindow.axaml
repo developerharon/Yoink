@@ -19,7 +19,12 @@
 
             <StackPanel Grid.Row="1" Margin="20,0,20,20" Spacing="16">
                 <TextBlock Name="MessageText" TextWrapping="Wrap" />
-                <Button Name="OkButton" Content="OK" Classes="Primary" HorizontalAlignment="Right" Click="OkButton_Click" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                    <!-- Hidden unless shown via ShowConfirmAsync — ShowAsync's plain OK-only
+                         acknowledgment never needs a way to say no. -->
+                    <Button Name="CancelButton" Content="Cancel" IsVisible="False" Click="CancelButton_Click" />
+                    <Button Name="OkButton" Content="OK" Classes="Primary" Click="OkButton_Click" />
+                </StackPanel>
             </StackPanel>
         </Grid>
     </Panel>

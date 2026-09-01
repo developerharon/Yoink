@@ -212,4 +212,86 @@ public class DownloadQueueServiceTests : IDisposable
 
         Assert.NotNull(ex.Message);
     }
+
+    /// <summary>
+    /// Regression test for a real report: with the default MaxConcurrentDownloads of 1, finishing
+    /// one download didn't start the next Pending one — it just sat there. Root cause was
+    /// ProcessItemAsync's finally block never releasing <c>_workAvailable</c>, so
+    /// ProcessLoopAsync (already parked in its 30-second WaitAsync, having seen zero capacity the
+    /// moment this item started) only noticed the freed-up slot on its next periodic recheck rather
+    /// than immediately.
+    ///
+    /// Needs a fake "yt-dlp" that genuinely runs for a moment before failing (a shell script that
+    /// sleeps, then exits non-zero) rather than the "point at a path that doesn't exist" trick the
+    /// other tests here use: a missing executable fails <c>Process.Start</c> itself, synchronously,
+    /// often before <c>ProcessItemAsync</c> ever actually suspends — which let the whole
+    /// enqueue-run-fail-cleanup cycle for the first item complete inline, within one
+    /// <c>ProcessLoopAsync</c> iteration, no wait ever entered, silently defeating this test
+    /// regardless of whether the fix was present. A real (if trivial) child process forces a genuine
+    /// await on process exit, so the loop's very next iteration reliably observes capacity still
+    /// taken — the actual scenario the bug depends on.
+    ///
+    /// Both items are seeded as Pending *before* the queue instance under test is ever constructed
+    /// (via a separate, schedule-closed instance pointed at the same database — reusing
+    /// CloseScheduleWindow/EnqueueAsync rather than hand-rolling a raw SQL insert, since that already
+    /// guarantees the exact same row shape production code writes), specifically so that starting the
+    /// real instance's background loop is the *only* thing that ever calls
+    /// <c>DownloadQueueService.EnqueueAsync</c>/<c>ResumeAsync</c>/<c>RetryAsync</c> — the only other
+    /// calls that legitimately release <c>_workAvailable</c> — on it. If either item's own enqueue
+    /// supplied that release instead, the loop's second item could start on that accidental signal
+    /// even with the bug still present, silently defeating the test the same way the fast-fail
+    /// executable did. Each is enqueued with its title already set, too, so ProcessItemAsync skips
+    /// its own <c>GetVideoInfoAsync</c> call (which would otherwise invoke the fake script an extra,
+    /// untimed time per item) and goes straight to the timed <c>DownloadAsync</c> call.
+    ///
+    /// Asserts on timing rather than outcome: both items failing well inside the 20s fact timeout —
+    /// nowhere near the 30s stall the bug caused — proves the second item started right after the
+    /// first finished, not on the loop's own periodic recheck.
+    /// </summary>
+    [Fact(Timeout = 20_000)]
+    public async Task SecondPendingItem_StartsImmediately_AfterFirstFinishes()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            // Stand-in "yt-dlp" below is a shell script — see DownloadAsyncStallWatchdogTests for
+            // the same platform restriction on the same trick.
+            Assert.Skip("Stand-in \"yt-dlp\" is a shell script, Linux-only.");
+            return;
+        }
+
+        var fakeYtDlp = Path.Combine(_tempDir, "fake-yt-dlp.sh");
+        File.WriteAllText(fakeYtDlp, "#!/bin/sh\nsleep 0.3\nexit 1\n");
+        File.SetUnixFileMode(fakeYtDlp,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var dbPath = DbPath();
+        long firstId, secondId;
+
+        CloseScheduleWindow();
+        using (var seedQueue = new DownloadQueueService(new YtDlpClient(), dbPath))
+        {
+            firstId = (await seedQueue.EnqueueAsync("https://youtu.be/abc123", 1080, title: "First video")).Id;
+            secondId = (await seedQueue.EnqueueAsync("https://youtu.be/def456", 1080, title: "Second video")).Id;
+        }
+
+        // Reopens the schedule so the real instance under test can actually process what was just
+        // seeded, and points the download folder at _tempDir rather than the platform's real
+        // Downloads folder — DownloadAsync (unlike GetVideoInfoAsync, which the other tests in this
+        // class stop short of) creates that directory for real.
+        SettingsService.Save(new AppSettings { DownloadFolder = _tempDir });
+
+        var ytDlp = new YtDlpClient();
+        ytDlp.UseResolvedPaths(fakeYtDlp, null);
+        using var queue = new DownloadQueueService(ytDlp, dbPath);
+
+        // Registered immediately after construction — before the loop's own first iteration has any
+        // realistic chance to reach, let alone finish, the first item — so there's no window for
+        // either item to complete unobserved (see WaitForCompletionAsync's own doc comment on why
+        // registration is synchronous, before that method's first await).
+        var firstWait = queue.WaitForCompletionAsync(firstId);
+        var secondWait = queue.WaitForCompletionAsync(secondId);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => firstWait);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => secondWait);
+    }
 }

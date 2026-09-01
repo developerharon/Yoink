@@ -22,12 +22,12 @@ public class DownloadQueueItemTests
     };
 
     [Theory]
-    [InlineData(DownloadQueueStatus.Pending, false, false, true, false, false, false)]
-    [InlineData(DownloadQueueStatus.Active, true, false, true, false, false, true)]
-    [InlineData(DownloadQueueStatus.Paused, false, true, true, false, false, true)]
-    [InlineData(DownloadQueueStatus.Completed, false, false, false, false, true, false)]
-    [InlineData(DownloadQueueStatus.Failed, false, false, false, true, false, false)]
-    [InlineData(DownloadQueueStatus.Canceled, false, false, false, true, false, false)]
+    [InlineData(DownloadQueueStatus.Pending, false, false, true, false, false, false, false)]
+    [InlineData(DownloadQueueStatus.Active, true, false, true, false, false, false, true)]
+    [InlineData(DownloadQueueStatus.Paused, false, true, true, false, false, false, true)]
+    [InlineData(DownloadQueueStatus.Completed, false, false, false, false, true, true, false)]
+    [InlineData(DownloadQueueStatus.Failed, false, false, false, true, false, true, false)]
+    [InlineData(DownloadQueueStatus.Canceled, false, false, false, true, false, true, false)]
     public void ActionVisibility_MatchesExactlyOneStateMachine(
         DownloadQueueStatus status,
         bool canPause,
@@ -35,6 +35,7 @@ public class DownloadQueueItemTests
         bool canCancel,
         bool canRetry,
         bool canShowInFolder,
+        bool canDelete,
         bool showProgress)
     {
         var item = Make(status);
@@ -44,6 +45,7 @@ public class DownloadQueueItemTests
         Assert.Equal(canCancel, item.CanCancel);
         Assert.Equal(canRetry, item.CanRetry);
         Assert.Equal(canShowInFolder, item.CanShowInFolder);
+        Assert.Equal(canDelete, item.CanDelete);
         Assert.Equal(showProgress, item.ShowProgress);
     }
 

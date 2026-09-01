@@ -18,6 +18,59 @@ download finishes or fails.
 Built with [Avalonia](https://avaloniaui.net/) on .NET 10, so it runs the same way on Linux, Windows, and
 macOS rather than being tied to Windows Forms.
 
+## Screenshots
+
+<table>
+<tr>
+<td width="50%">
+
+**Clipboard auto-catch** — copy a YouTube link, and Yoink offers to grab it, no browser extension required.
+
+![Clipboard auto-catch prompt](docs/screenshots/clipboard-detected.png)
+
+</td>
+<td width="50%">
+
+**Pick a resolution and format** — resolved from what that specific video actually offers, not a guessed list.
+
+![Add download dialog with resolution and format pickers](docs/screenshots/add-download.png)
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**A live queue** — pause or cancel any download in progress, with real-time size and speed.
+
+![Downloads queue with an active download in progress](docs/screenshots/active-download.png)
+
+</td>
+<td width="50%">
+
+**History that never disappears** — every download, completed or not, stays visible.
+
+![Downloads queue full of completed downloads](docs/screenshots/download-history.png)
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Appearance & auto-catch** — theme, accent color, and clipboard watching.
+
+![Settings screen: Appearance and Auto-catch sections](docs/screenshots/settings-appearance.png)
+
+</td>
+<td width="50%">
+
+**Downloads & scheduling** — download folder, concurrency, speed limits, and quiet hours.
+
+![Settings screen: Downloads and Scheduling sections](docs/screenshots/settings-downloads.png)
+
+</td>
+</tr>
+</table>
+
 ## Download
 
 There's no pre-built download yet — packaging is still pending, Ubuntu first (a self-updating AppImage),

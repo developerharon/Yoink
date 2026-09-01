@@ -66,6 +66,7 @@ public partial class MainWindow : Window
 
         _queue = new DownloadQueueService(_ytDlp, databasePath);
         _queue.ItemChanged += OnQueueItemChanged;
+        _queue.ItemRemoved += OnQueueItemRemoved;
 
         LstQueue.ItemsSource = _items;
         UpdateEmptyQueueVisibility();
@@ -405,6 +406,30 @@ public partial class MainWindow : Window
     private static Task RunItemActionAsync(object? sender, Func<long, CancellationToken, Task> action) =>
         sender is Control { DataContext: DownloadQueueItem item } ? action(item.Id, default) : Task.CompletedTask;
 
+    /// <summary>Removes a row from the list only — the downloaded file, if any, is left alone.</summary>
+    private async void BtnRemoveFromList_Click(object? sender, RoutedEventArgs e) =>
+        await RunItemActionAsync(sender, (id, ct) => _queue.DeleteAsync(id, deleteFile: false, ct));
+
+    /// <summary>
+    /// The rarer, genuinely destructive option in the Delete flyout — confirms first (unlike every
+    /// other row action, none of which are hard to reverse the way an actual file deletion is) via
+    /// <see cref="MessageBoxWindow.ShowConfirmAsync"/>.
+    /// </summary>
+    private async void BtnDeleteWithFile_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control { DataContext: DownloadQueueItem item })
+            return;
+
+        var confirmed = await MessageBoxWindow.ShowConfirmAsync(
+            this,
+            $"Delete \"{item.DisplayTitle}\" from disk and remove it from this list? This can't be undone.",
+            "Delete download",
+            "Delete");
+
+        if (confirmed)
+            await _queue.DeleteAsync(item.Id, deleteFile: true);
+    }
+
     /// <summary>
     /// Opens the OS file manager at the downloaded file, so a completed queue entry is actually
     /// useful once it's scrolled out of view.
@@ -502,6 +527,33 @@ public partial class MainWindow : Window
         });
     }
 
+    /// <summary>
+    /// Mirror of <see cref="OnQueueItemChanged"/> for <see cref="DownloadQueueService.ItemRemoved"/>:
+    /// drops the row from <see cref="_items"/>/<see cref="_itemIndexById"/> instead of replacing it.
+    /// Every tracked index past the removed one shifts down by one to stay in sync — the same
+    /// bookkeeping <see cref="OnQueueItemChanged"/>'s own insert-at-front path already does, just in
+    /// the other direction.
+    /// </summary>
+    private void OnQueueItemRemoved(long id)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!_itemIndexById.TryGetValue(id, out var index))
+                return;
+
+            _items.RemoveAt(index);
+            _itemIndexById.Remove(id);
+
+            foreach (var key in _itemIndexById.Keys.ToArray())
+            {
+                if (_itemIndexById[key] > index)
+                    _itemIndexById[key]--;
+            }
+
+            UpdateEmptyQueueVisibility();
+        });
+    }
+
     private static Task NotifyDownloadFinishedAsync(DownloadQueueItem item)
     {
         var completed = item.Status == DownloadQueueStatus.Completed;
@@ -513,6 +565,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _queue.ItemChanged -= OnQueueItemChanged;
+        _queue.ItemRemoved -= OnQueueItemRemoved;
         _queue.Dispose();
 
         if (_clipboardWatcher is not null)
