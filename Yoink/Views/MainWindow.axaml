@@ -150,8 +150,15 @@
                                    Classes="Caption" TextWrapping="Wrap" TextAlignment="Center" />
                     </StackPanel>
 
+                    <!-- Padding on the right, not the ScrollViewer's own Padding: the Fluent theme's
+                         overlay scrollbar draws at the ScrollViewer's own edge regardless of the
+                         content's padding, so it still sat on top of each row's rightmost buttons
+                         (Retry/Show in folder). Shrinking the ItemsControl itself by that much
+                         instead leaves genuine blank space at that edge for the scrollbar to sit
+                         over, confirmed against a real screenshot rather than assumed from the
+                         property existing (see the headless-visual-verification project memory). -->
                     <ScrollViewer>
-                        <ItemsControl Name="LstQueue">
+                        <ItemsControl Name="LstQueue" Padding="0,0,18,0">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="models:DownloadQueueItem">
                                     <Border BorderBrush="{DynamicResource BorderBrush2}" BorderThickness="0,0,0,1" Padding="0,10">
