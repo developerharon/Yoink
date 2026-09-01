@@ -16,9 +16,11 @@
 
          Three stages, one panel each, toggled via IsVisible (same pattern MainWindow uses for
          DownloadsBody/SettingsBody) rather than separate windows/pages — see AddDownloadDialog.axaml.cs:
-         PanelUrlEntry (paste a URL) -> PanelLoading (resolving it via yt-dlp, visible feedback for
-         what used to be a silent multi-second pause) -> PanelOptions (real resolution/container
-         choices, built from what yt-dlp actually reported, not a guessed fixed list) -> queued. -->
+         PanelUrlEntry (paste a URL) -> PanelLoading (resolving it via yt-dlp or a plain HTTP probe,
+         depending on the URL — visible feedback for what used to be a silent multi-second pause) ->
+         PanelOptions -> queued. PanelOptions itself branches: PanelVideoOptions (resolution/container,
+         built from what yt-dlp actually reported for that video) is shown for a YouTube URL and
+         hidden for a generic file, where TxtFileMeta (size/type from the HTTP probe) shows instead. -->
     <Panel>
         <Border Margin="4" BorderBrush="{DynamicResource BorderBrush2}" BorderThickness="1" IsHitTestVisible="False" />
 
@@ -27,29 +29,32 @@
 
             <StackPanel Grid.Row="1" Margin="20,0,20,20" Spacing="14">
                 <StackPanel Name="PanelUrlEntry" Spacing="4">
-                    <TextBlock Text="YouTube URL" Classes="Caption" />
-                    <TextBox Name="TxtUrl" PlaceholderText="https://www.youtube.com/watch?v=..." />
+                    <TextBlock Text="URL" Classes="Caption" />
+                    <TextBox Name="TxtUrl" PlaceholderText="A YouTube link, or a direct file link (PDF, .zip, .exe, ...)" />
                 </StackPanel>
 
                 <StackPanel Name="PanelLoading" Spacing="10" IsVisible="False">
                     <ProgressBar IsIndeterminate="True" />
-                    <TextBlock Text="Resolving video info…" Classes="Caption" HorizontalAlignment="Center" />
+                    <TextBlock Text="Resolving…" Classes="Caption" HorizontalAlignment="Center" />
                 </StackPanel>
 
                 <StackPanel Name="PanelOptions" Spacing="14" IsVisible="False">
                     <TextBlock Name="TxtResolvedTitle" FontWeight="Medium" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxLines="2" />
+                    <TextBlock Name="TxtFileMeta" Classes="Caption" IsVisible="False" />
 
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="Resolution" Classes="Caption" />
-                        <ComboBox Name="CboResolution" Width="140" HorizontalAlignment="Left" />
-                    </StackPanel>
+                    <StackPanel Name="PanelVideoOptions" Spacing="14">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Resolution" Classes="Caption" />
+                            <ComboBox Name="CboResolution" Width="140" HorizontalAlignment="Left" />
+                        </StackPanel>
 
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="Format" Classes="Caption" />
-                        <ComboBox Name="CboContainer" Width="140" HorizontalAlignment="Left" SelectedIndex="0">
-                            <ComboBoxItem>MP4</ComboBoxItem>
-                            <ComboBoxItem>MKV</ComboBoxItem>
-                        </ComboBox>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Format" Classes="Caption" />
+                            <ComboBox Name="CboContainer" Width="140" HorizontalAlignment="Left" SelectedIndex="0">
+                                <ComboBoxItem>MP4</ComboBoxItem>
+                                <ComboBoxItem>MKV</ComboBoxItem>
+                            </ComboBox>
+                        </StackPanel>
                     </StackPanel>
                 </StackPanel>
 

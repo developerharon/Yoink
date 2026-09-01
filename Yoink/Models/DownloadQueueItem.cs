@@ -115,9 +115,11 @@ public sealed class DownloadQueueItem
     /// <summary>
     /// Binary (1024-based) units, matching what these bytes were actually computed from — yt-dlp's
     /// own KiB/MiB/GiB progress output — but labeled the more familiar KB/MB/GB rather than the
-    /// pedantically-correct KiB/MiB/GiB, matching how most end-user apps display file sizes.
+    /// pedantically-correct KiB/MiB/GiB, matching how most end-user apps display file sizes. Internal
+    /// (not private) so <c>Views.AddDownloadDialog</c> can reuse it for a generic file's size caption
+    /// rather than reimplementing the same formatting.
     /// </summary>
-    private static string FormatBytes(long bytes)
+    internal static string FormatBytes(long bytes)
     {
         string[] units = ["B", "KB", "MB", "GB", "TB"];
         double value = bytes;

@@ -7,8 +7,9 @@ namespace Yoink.Tests.Services;
 
 /// <summary>
 /// Drives the real background poll loop with a fast interval and fake clipboard-read/enabled
-/// delegates — see ClipboardWatcherService's own doc comment for why detection is a conservative,
-/// YouTube-only regex and why it's a delegate-based design rather than exposing settable properties.
+/// delegates — see ClipboardWatcherService's own doc comment for why detection is conservative (a
+/// fixed YouTube regex plus a known-file-extension check via DownloadUrlKind, not a broad "any URL"
+/// match) and why it's a delegate-based design rather than exposing settable properties.
 /// </summary>
 public class ClipboardWatcherServiceTests
 {
@@ -45,10 +46,36 @@ public class ClipboardWatcherServiceTests
     }
 
     [Theory]
+    [InlineData("https://github.com/developerharon/Yoink/releases/download/v0.1.0/Yoink.AppImage")]
+    [InlineData("https://example.com/files/report.pdf")]
+    [InlineData("https://example.com/setup.exe")]
+    [InlineData("https://example.com/package.deb")]
+    [InlineData("HTTPS://EXAMPLE.COM/REPORT.PDF")]
+    public async Task UrlDetected_Fires_ForRecognizedDownloadableFileLinks(string clipboardText)
+    {
+        string? detected = null;
+        var detectedEvent = new System.Threading.ManualResetEventSlim(false);
+
+        using var watcher = new ClipboardWatcherService(
+            () => Task.FromResult<string?>(clipboardText),
+            () => true,
+            PollInterval);
+        watcher.UrlDetected += url =>
+        {
+            detected = url;
+            detectedEvent.Set();
+        };
+
+        Assert.True(detectedEvent.Wait(WaitTimeout), "UrlDetected never fired.");
+        Assert.Equal(clipboardText, detected);
+    }
+
+    [Theory]
     [InlineData("https://example.com/watch?v=dQw4w9WgXcQ")]
     [InlineData("not a url at all")]
     [InlineData("ftp://youtu.be/dQw4w9WgXcQ")]
     [InlineData("https://youtube.com/results?search_query=cats")]
+    [InlineData("https://example.com/some/page")] // an ordinary webpage link, not a file
     [InlineData("")]
     public async Task UrlDetected_NeverFires_ForNonMatchingText(string clipboardText)
     {
