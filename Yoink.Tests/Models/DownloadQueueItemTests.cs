@@ -107,4 +107,50 @@ public class DownloadQueueItemTests
         Assert.Contains("2026", item.Subtitle);
         Assert.DoesNotContain("ignored", item.Subtitle);
     }
+
+    [Fact]
+    public void ShowSize_IsFalse_WhenTotalBytesNotYetKnown()
+    {
+        var item = Make(DownloadQueueStatus.Active);
+        item.TotalBytes = null;
+
+        Assert.False(item.ShowSize);
+    }
+
+    [Fact]
+    public void ShowSize_IsFalse_WhenNotActiveOrPaused_EvenWithKnownTotal()
+    {
+        // A Completed item still carries whatever bytes/total DownloadAsync's own final report
+        // left it with (see YtDlpClient.DownloadAsync) — ShowSize hides it anyway, same gate as
+        // ShowProgress, since the size readout only makes sense mid-download.
+        var item = Make(DownloadQueueStatus.Completed);
+        item.DownloadedBytes = 1024;
+        item.TotalBytes = 2048;
+
+        Assert.False(item.ShowSize);
+    }
+
+    [Fact]
+    public void ShowSize_IsTrue_WhenActiveWithKnownTotal()
+    {
+        var item = Make(DownloadQueueStatus.Active);
+        item.DownloadedBytes = 1024;
+        item.TotalBytes = 2048;
+
+        Assert.True(item.ShowSize);
+    }
+
+    [Theory]
+    [InlineData(0L, 0L, "0 B / 0 B")]
+    [InlineData(512L, 1024L, "512 B / 1 KB")]
+    [InlineData(1_572_864L, 10_485_760L, "1.5 MB / 10 MB")]
+    [InlineData(1_073_741_824L, 2_147_483_648L, "1 GB / 2 GB")]
+    public void SizeText_FormatsBothSidesInBinaryUnits(long downloaded, long total, string expected)
+    {
+        var item = Make(DownloadQueueStatus.Active);
+        item.DownloadedBytes = downloaded;
+        item.TotalBytes = total;
+
+        Assert.Equal(expected, item.SizeText);
+    }
 }

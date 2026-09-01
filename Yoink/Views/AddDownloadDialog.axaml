@@ -13,8 +13,12 @@
          for why ExtendClientAreaToDecorationsHint doesn't merge on GNOME/Mutter), scaled down for a
          fixed-size modal — no resize edges (CanResize is already False) or minimize/maximize
          (nothing to minimize/maximize to), just DialogTitleBar's drag-to-move row and close button.
-         This is what stops the "add download" form from reading like a bare default OS dialog next
-         to MainWindow/SettingsView's designed look. -->
+
+         Three stages, one panel each, toggled via IsVisible (same pattern MainWindow uses for
+         DownloadsBody/SettingsBody) rather than separate windows/pages — see AddDownloadDialog.axaml.cs:
+         PanelUrlEntry (paste a URL) -> PanelLoading (resolving it via yt-dlp, visible feedback for
+         what used to be a silent multi-second pause) -> PanelOptions (real resolution/container
+         choices, built from what yt-dlp actually reported, not a guessed fixed list) -> queued. -->
     <Panel>
         <Border Margin="4" BorderBrush="{DynamicResource BorderBrush2}" BorderThickness="1" IsHitTestVisible="False" />
 
@@ -22,25 +26,36 @@
             <views:DialogTitleBar Grid.Row="0" Name="TitleBar" Title="Add download" />
 
             <StackPanel Grid.Row="1" Margin="20,0,20,20" Spacing="14">
-                <StackPanel Spacing="4">
+                <StackPanel Name="PanelUrlEntry" Spacing="4">
                     <TextBlock Text="YouTube URL" Classes="Caption" />
                     <TextBox Name="TxtUrl" PlaceholderText="https://www.youtube.com/watch?v=..." />
                 </StackPanel>
 
-                <StackPanel Spacing="4">
-                    <TextBlock Text="Resolution" Classes="Caption" />
-                    <ComboBox Name="CboResolution" Width="110" SelectedIndex="0">
-                        <ComboBoxItem>360</ComboBoxItem>
-                        <ComboBoxItem>480</ComboBoxItem>
-                        <ComboBoxItem>720</ComboBoxItem>
-                        <ComboBoxItem>1080</ComboBoxItem>
-                        <ComboBoxItem>1440</ComboBoxItem>
-                    </ComboBox>
+                <StackPanel Name="PanelLoading" Spacing="10" IsVisible="False">
+                    <ProgressBar IsIndeterminate="True" />
+                    <TextBlock Text="Resolving video info…" Classes="Caption" HorizontalAlignment="Center" />
+                </StackPanel>
+
+                <StackPanel Name="PanelOptions" Spacing="14" IsVisible="False">
+                    <TextBlock Name="TxtResolvedTitle" FontWeight="Medium" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxLines="2" />
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="Resolution" Classes="Caption" />
+                        <ComboBox Name="CboResolution" Width="140" HorizontalAlignment="Left" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="Format" Classes="Caption" />
+                        <ComboBox Name="CboContainer" Width="140" HorizontalAlignment="Left" SelectedIndex="0">
+                            <ComboBoxItem>MP4</ComboBoxItem>
+                            <ComboBoxItem>MKV</ComboBoxItem>
+                        </ComboBox>
+                    </StackPanel>
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                     <Button Name="BtnCancel" Content="Cancel" Click="BtnCancel_Click" />
-                    <Button Name="BtnAdd" Content="Add to queue" Classes="Primary" Click="BtnAdd_Click" />
+                    <Button Name="BtnPrimary" Content="Continue" Classes="Primary" Click="BtnPrimary_Click" />
                 </StackPanel>
             </StackPanel>
         </Grid>

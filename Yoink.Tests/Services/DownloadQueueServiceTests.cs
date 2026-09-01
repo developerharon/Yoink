@@ -10,11 +10,14 @@ namespace Yoink.Tests.Services;
 
 /// <summary>
 /// <see cref="YtDlpClient"/> is sealed with no interface, so it can't be faked — these tests use the
-/// real thing against yt-dlp, deliberately absent from this environment (confirmed: not on PATH here,
-/// and not preinstalled on GitHub's ubuntu-latest runners either), which is actually useful: any item
-/// this suite lets the background processing loop pick up will reliably and quickly fail (a
-/// <c>Win32Exception</c> starting the process, caught by <c>ProcessItemAsync</c>'s error handling —
-/// see DownloadQueueService.cs), never hang or hit the network.
+/// real thing. The one test that needs it to actually fail
+/// (<see cref="EnqueueAndWaitAsync_Throws_WhenYtDlpIsUnavailable"/>) used to rely on yt-dlp being
+/// absent from PATH in this environment, which broke the moment a dev machine (or CI image) happens
+/// to have yt-dlp installed for real — surfaced exactly that way once yt-dlp got installed here to
+/// fix actual downloads (see the "dependency provisioning" project memory). It now points
+/// <see cref="YtDlpClient.UseResolvedPaths"/> at a path that can't exist instead, the same mechanism
+/// <c>DependencyProvisioningService</c> uses in production — deterministic regardless of what's
+/// actually on PATH, rather than depending on this environment's absence of yt-dlp.
 ///
 /// For everything else — CRUD/persistence/status transitions that should NOT race the background
 /// loop's own polling — each test closes the schedule window (<c>SchedulingEnabled=true</c>,
@@ -68,6 +71,28 @@ public class DownloadQueueServiceTests : IDisposable
         Assert.Equal("https://youtu.be/abc123", stored.Url);
         Assert.Equal(1080, stored.Resolution);
         Assert.Equal(DownloadQueueStatus.Pending, stored.Status);
+        Assert.Equal("", stored.Title);
+        Assert.Equal("mp4", stored.ContainerFormat);
+    }
+
+    [Fact]
+    public async Task EnqueueAsync_PersistsAnAlreadyResolvedTitleAndContainerFormat()
+    {
+        // Views.AddDownloadDialog now resolves the video (and picks a container) before enqueuing
+        // at all — passing that through here is what lets DownloadQueueService's own background
+        // loop skip its redundant GetVideoInfoAsync call once this item is dequeued.
+        CloseScheduleWindow();
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+
+        var enqueued = await queue.EnqueueAsync(
+            "https://youtu.be/abc123", 1080, title: "Some Resolved Title", containerFormat: "mkv");
+
+        Assert.Equal("Some Resolved Title", enqueued.Title);
+        Assert.Equal("mkv", enqueued.ContainerFormat);
+
+        var stored = Assert.Single(await queue.GetAllAsync());
+        Assert.Equal("Some Resolved Title", stored.Title);
+        Assert.Equal("mkv", stored.ContainerFormat);
     }
 
     [Fact]
@@ -175,7 +200,12 @@ public class DownloadQueueServiceTests : IDisposable
     [Fact(Timeout = 20_000)]
     public async Task EnqueueAndWaitAsync_Throws_WhenYtDlpIsUnavailable()
     {
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        // See the class doc comment: pointed at a path that can't exist, rather than relying on
+        // yt-dlp being absent from PATH, so this stays deterministic regardless of what's actually
+        // installed on the machine running the test.
+        var ytDlp = new YtDlpClient();
+        ytDlp.UseResolvedPaths(Path.Combine(_tempDir, "yt-dlp-that-does-not-exist"), null);
+        using var queue = new DownloadQueueService(ytDlp, DbPath());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => queue.EnqueueAndWaitAsync("https://youtu.be/abc123", 1080));
