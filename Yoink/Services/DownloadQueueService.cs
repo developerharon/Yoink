@@ -453,6 +453,18 @@ public sealed class DownloadQueueService : IDisposable
         {
             _activeCancellations.TryRemove(item.Id, out _);
             _activeTasks.TryRemove(item.Id, out _);
+
+            // Frees a concurrency slot ProcessLoopAsync's own capacity check (Math.Max(1,
+            // MaxConcurrentDownloads) - _activeCancellations.Count) will now see as available — but
+            // that loop iteration already ran (it's what started this very item) and, seeing no
+            // capacity left, is sitting in its 30-second WaitAsync until something releases
+            // _workAvailable. EnqueueAsync/ResumeAsync/RetryAsync already do that for "a new item
+            // exists to consider"; this is the missing half for "a slot just freed up" — without it,
+            // every completion (success, failure, or cancellation) left the next Pending item
+            // waiting up to 30s for the loop's own periodic recheck instead of starting immediately,
+            // which is especially visible at the default MaxConcurrentDownloads of 1, where this
+            // fires after literally every single download.
+            _workAvailable.Release();
         }
     }
 
