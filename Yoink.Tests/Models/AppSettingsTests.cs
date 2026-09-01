@@ -20,6 +20,7 @@ public class AppSettingsTests
         Assert.True(settings.ClipboardWatchEnabled);
         Assert.False(settings.MinimizeToTrayOnClose);
         Assert.Equal(1, settings.MaxConcurrentDownloads);
+        Assert.Equal(4, settings.MaxConnectionsPerDownload);
         Assert.Null(settings.PerDownloadSpeedLimitKBps);
         Assert.Null(settings.GlobalSpeedLimitKBps);
         Assert.False(settings.SchedulingEnabled);

@@ -35,6 +35,14 @@ public sealed class DownloadQueueService : IDisposable
         "queue.db");
 
     private readonly YtDlpClient _ytDlp;
+
+    /// <summary>
+    /// Owned by this service so its lifetime (and its <see cref="HttpClient"/>) matches the queue's
+    /// own — every <see cref="DownloadKind.File"/> item's actual download goes through this one
+    /// shared instance rather than a new engine per item.
+    /// </summary>
+    private readonly DownloadEngine _downloadEngine = new();
+
     private readonly SqliteConnection _connection;
 
     // SQLite only ever allows one writer at a time regardless of how many connections you open —
@@ -119,6 +127,7 @@ public sealed class DownloadQueueService : IDisposable
         int resolution,
         string title = "",
         string containerFormat = "mp4",
+        DownloadKind kind = DownloadKind.Video,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -128,9 +137,9 @@ public sealed class DownloadQueueService : IDisposable
         {
             await using var command = _connection.CreateCommand();
             command.CommandText = """
-                INSERT INTO download_queue (Url, Title, Resolution, ContainerFormat, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt)
+                INSERT INTO download_queue (Url, Title, Resolution, ContainerFormat, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt, Kind)
                 VALUES ($url, $title, $resolution, $containerFormat, NULL, $status, 0, NULL,
-                        (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt);
+                        (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt, $kind);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$url", url);
@@ -139,6 +148,7 @@ public sealed class DownloadQueueService : IDisposable
             command.Parameters.AddWithValue("$containerFormat", containerFormat);
             command.Parameters.AddWithValue("$status", DownloadQueueStatus.Pending.ToString());
             command.Parameters.AddWithValue("$createdAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue("$kind", kind.ToString());
 
             return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
         }, cancellationToken).ConfigureAwait(false);
@@ -150,6 +160,7 @@ public sealed class DownloadQueueService : IDisposable
             Title = title,
             Resolution = resolution,
             ContainerFormat = containerFormat,
+            Kind = kind,
             Status = DownloadQueueStatus.Pending,
             CreatedAt = DateTimeOffset.Now
         };
@@ -391,39 +402,16 @@ public sealed class DownloadQueueService : IDisposable
 
         try
         {
-            if (string.IsNullOrEmpty(item.Title))
-            {
-                var info = await _ytDlp.GetVideoInfoAsync(item.Url, itemCts.Token).ConfigureAwait(false);
-                item.Title = info.Title;
-            }
-
             // Re-read settings rather than reusing whatever ProcessLoopAsync last saw: this item
             // may have been sitting Pending for a while, and the download-folder/speed-limit
             // settings could have changed since.
             var settings = SettingsService.Load();
-
-            item.FilePath ??= BuildDestinationPath(item.Title, ResolveDownloadFolder(settings), item.ContainerFormat);
-
-            var selector = BuildFormatSelector(item.Resolution);
-            var progress = new Progress<YtDlpDownloadProgress>(p =>
-            {
-                item.Progress = p.Fraction;
-                item.DownloadedBytes = p.BytesDownloaded;
-                item.TotalBytes = p.TotalBytes;
-                RaiseChanged(item);
-            });
-
             var rateLimitKBps = ComputeRateLimitKBps(settings);
 
-            await _ytDlp.DownloadAsync(
-                item.Url,
-                selector,
-                item.FilePath,
-                expectedSegmentCount: 2,
-                rateLimitKBps: rateLimitKBps,
-                containerFormat: item.ContainerFormat,
-                progress: progress,
-                cancellationToken: itemCts.Token).ConfigureAwait(false);
+            if (item.Kind == DownloadKind.Video)
+                await ProcessVideoItemAsync(item, settings, rateLimitKBps, itemCts.Token).ConfigureAwait(false);
+            else
+                await ProcessFileItemAsync(item, settings, rateLimitKBps, itemCts.Token).ConfigureAwait(false);
 
             item.Status = DownloadQueueStatus.Completed;
             item.Progress = 1.0;
@@ -468,13 +456,81 @@ public sealed class DownloadQueueService : IDisposable
         }
     }
 
+    /// <summary>The original yt-dlp download path — unchanged in substance from before <see cref="DownloadKind"/> existed, just split out of <see cref="ProcessItemAsync"/> so that method can branch on kind.</summary>
+    private async Task ProcessVideoItemAsync(DownloadQueueItem item, AppSettings settings, int? rateLimitKBps, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(item.Title))
+        {
+            var info = await _ytDlp.GetVideoInfoAsync(item.Url, cancellationToken).ConfigureAwait(false);
+            item.Title = info.Title;
+        }
+
+        item.FilePath ??= BuildDestinationPath(item.Title, ResolveDownloadFolder(settings), item.ContainerFormat);
+
+        var selector = BuildFormatSelector(item.Resolution);
+        var progress = new Progress<YtDlpDownloadProgress>(p =>
+        {
+            item.Progress = p.Fraction;
+            item.DownloadedBytes = p.BytesDownloaded;
+            item.TotalBytes = p.TotalBytes;
+            RaiseChanged(item);
+        });
+
+        await _ytDlp.DownloadAsync(
+            item.Url,
+            selector,
+            item.FilePath,
+            expectedSegmentCount: 2,
+            rateLimitKBps: rateLimitKBps,
+            containerFormat: item.ContainerFormat,
+            progress: progress,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The generic direct-link path via <see cref="DownloadEngine"/> — a plain HTTP(S) URL to
+    /// whatever file (PDF, .exe, .deb, ...), not a YouTube video. <see cref="DownloadQueueItem.Title"/>
+    /// doubles as the resolved filename here, same "skip re-resolving it" reasoning as the video
+    /// path above: <c>Views.AddDownloadDialog</c>'s generic-file flow already probes the URL before
+    /// enqueueing (see that view's own notes), so this only probes again for an item that somehow
+    /// reached here without one — enqueued directly through <see cref="EnqueueAsync"/>, for instance.
+    /// </summary>
+    private async Task ProcessFileItemAsync(DownloadQueueItem item, AppSettings settings, int? rateLimitKBps, CancellationToken cancellationToken)
+    {
+        var sourceUri = new Uri(item.Url);
+
+        if (string.IsNullOrEmpty(item.Title))
+        {
+            var probe = await _downloadEngine.ProbeAsync(sourceUri, cancellationToken).ConfigureAwait(false);
+            item.Title = probe.FileName ?? DownloadEngine.GetFileNameFromUri(sourceUri);
+        }
+
+        item.FilePath ??= BuildFileDestinationPath(item.Title, ResolveDownloadFolder(settings));
+
+        var progress = new Progress<DownloadEngineProgress>(p =>
+        {
+            item.Progress = p.Fraction;
+            item.DownloadedBytes = p.BytesDownloaded;
+            item.TotalBytes = p.TotalBytes;
+            RaiseChanged(item);
+        });
+
+        await _downloadEngine.DownloadAsync(
+            sourceUri,
+            item.FilePath,
+            progress: progress,
+            rateLimitKBps: rateLimitKBps,
+            maxConnections: Math.Max(1, settings.MaxConnectionsPerDownload),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
     private void CompleteWaiter(DownloadQueueItem item)
     {
         if (_waiters.TryRemove(item.Id, out var tcs))
             tcs.TrySetResult(item);
     }
 
-    // internal (not private) so Yoink.Tests can exercise these two directly.
+    // internal (not private) so Yoink.Tests can exercise these directly.
     internal static string BuildFormatSelector(int resolution) =>
         $"bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/best";
 
@@ -482,6 +538,18 @@ public sealed class DownloadQueueService : IDisposable
     {
         var fileName = string.Concat(title.Split(Path.GetInvalidFileNameChars())) + "." + containerFormat;
         return Path.Combine(downloadFolder, fileName);
+    }
+
+    /// <summary>
+    /// Same idea as <see cref="BuildDestinationPath"/> but for a <see cref="DownloadKind.File"/> item
+    /// — <paramref name="fileName"/> already carries whatever extension it actually has (from
+    /// <see cref="DownloadEngine.ProbeAsync"/> or the URL itself), so unlike the video path nothing
+    /// gets appended to it.
+    /// </summary>
+    internal static string BuildFileDestinationPath(string fileName, string downloadFolder)
+    {
+        var sanitized = string.Concat(fileName.Split(Path.GetInvalidFileNameChars()));
+        return Path.Combine(downloadFolder, string.IsNullOrWhiteSpace(sanitized) ? "download" : sanitized);
     }
 
     /// <summary>
@@ -583,13 +651,13 @@ public sealed class DownloadQueueService : IDisposable
     /// </summary>
     private readonly record struct ColumnOrdinals(
         int Id, int Url, int Title, int Resolution, int ContainerFormat, int FilePath,
-        int Status, int Progress, int ErrorMessage, int Position, int CreatedAt)
+        int Status, int Progress, int ErrorMessage, int Position, int CreatedAt, int Kind)
     {
         public static ColumnOrdinals FromReader(SqliteDataReader reader) => new(
             reader.GetOrdinal("Id"), reader.GetOrdinal("Url"), reader.GetOrdinal("Title"),
             reader.GetOrdinal("Resolution"), reader.GetOrdinal("ContainerFormat"), reader.GetOrdinal("FilePath"),
             reader.GetOrdinal("Status"), reader.GetOrdinal("Progress"), reader.GetOrdinal("ErrorMessage"),
-            reader.GetOrdinal("Position"), reader.GetOrdinal("CreatedAt"));
+            reader.GetOrdinal("Position"), reader.GetOrdinal("CreatedAt"), reader.GetOrdinal("Kind"));
     }
 
     private static DownloadQueueItem ReadItem(SqliteDataReader reader) => ReadItem(reader, ColumnOrdinals.FromReader(reader));
@@ -607,7 +675,8 @@ public sealed class DownloadQueueService : IDisposable
         ErrorMessage = reader.IsDBNull(o.ErrorMessage) ? null : reader.GetString(o.ErrorMessage),
         Position = reader.GetInt32(o.Position),
         CreatedAt = DateTimeOffset.Parse(
-            reader.GetString(o.CreatedAt), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+            reader.GetString(o.CreatedAt), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+        Kind = Enum.Parse<DownloadKind>(reader.GetString(o.Kind))
     };
 
     /// <summary>
@@ -641,6 +710,11 @@ public sealed class DownloadQueueService : IDisposable
         // and errors on a second run otherwise. Defaults every pre-existing row to "mp4", matching
         // this app's previous hardcoded behavior exactly.
         EnsureColumnExists("ContainerFormat", "TEXT NOT NULL DEFAULT 'mp4'");
+
+        // Same reasoning, added when generic (non-YouTube) file downloads were: every pre-existing
+        // row predates DownloadKind entirely, and "Video" (yt-dlp) is exactly what all of them
+        // already were before this column existed.
+        EnsureColumnExists("Kind", "TEXT NOT NULL DEFAULT 'Video'");
     }
 
     private void EnsureColumnExists(string columnName, string columnDefinitionSql)
@@ -734,5 +808,6 @@ public sealed class DownloadQueueService : IDisposable
         _workAvailable.Dispose();
         _dbLock.Dispose();
         _connection.Dispose();
+        _downloadEngine.Dispose();
     }
 }

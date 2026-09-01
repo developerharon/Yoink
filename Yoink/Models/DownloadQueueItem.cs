@@ -19,6 +19,21 @@ public enum DownloadQueueStatus
 }
 
 /// <summary>
+/// What a queued item actually is, and therefore which downloader
+/// <see cref="Services.DownloadQueueService.ProcessItemAsync"/> hands it to. <see cref="Video"/>
+/// (yt-dlp) is the original, sole behavior — every pre-existing row defaults to it via the same
+/// <c>EnsureColumnExists</c> migration pattern <c>ContainerFormat</c> already used. <see cref="File"/>
+/// is a plain direct-link download (PDF, .exe, .deb, ...) via <see cref="Services.DownloadEngine"/> —
+/// <see cref="Resolution"/>/<see cref="ContainerFormat"/> don't mean anything for one of these; see
+/// each property's own doc comment for what a File-kind row uses instead.
+/// </summary>
+public enum DownloadKind
+{
+    Video,
+    File
+}
+
+/// <summary>
 /// One row in the persisted download queue (README roadmap step 3). Plain data — no
 /// <c>INotifyPropertyChanged</c> ceremony; <see cref="Services.DownloadQueueService"/> owns
 /// reading/writing it, and the queue view (<c>Views.MainWindow</c>) reflects a change by replacing
@@ -31,14 +46,27 @@ public sealed class DownloadQueueItem
 {
     public long Id { get; set; }
     public string Url { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The video's title for a <see cref="DownloadKind.Video"/> row; the resolved (or URL-derived)
+    /// filename — e.g. "Yoink.AppImage" — for a <see cref="DownloadKind.File"/> one. Doubles as
+    /// "already resolved, don't fetch it again" for both kinds, the same way it always has for
+    /// video — see <see cref="Services.DownloadQueueService.EnqueueAsync"/>'s own doc comment.
+    /// </summary>
     public string Title { get; set; } = string.Empty;
+
+    public DownloadKind Kind { get; set; } = DownloadKind.Video;
+
+    /// <summary>Meaningless for <see cref="DownloadKind.File"/> — always 0 on those rows.</summary>
     public int Resolution { get; set; }
 
     /// <summary>
     /// The muxed container yt-dlp's own `--merge-output-format` produces — "mp4" or "mkv", chosen
     /// in <c>Views.AddDownloadDialog</c> alongside resolution. Defaults to "mp4" for any row
     /// created before this existed (via <c>Services.DownloadQueueService</c>'s column-add
-    /// migration), matching this app's previous hardcoded behavior exactly.
+    /// migration), matching this app's previous hardcoded behavior exactly. Meaningless for
+    /// <see cref="DownloadKind.File"/> — a generic file keeps whatever extension its own resolved
+    /// filename (<see cref="Title"/>) already has, rather than one being forced onto it.
     /// </summary>
     public string ContainerFormat { get; set; } = "mp4";
 
@@ -67,9 +95,12 @@ public sealed class DownloadQueueItem
 
     public string StatusText => Status.ToString();
 
+    /// <summary>"1080p" for a video row, "File" for a generic one — <see cref="Resolution"/> has no meaning there.</summary>
+    private string KindLabel => Kind == DownloadKind.Video ? $"{Resolution}p" : "File";
+
     public string Subtitle => Status == DownloadQueueStatus.Failed && !string.IsNullOrEmpty(ErrorMessage)
-        ? $"{Resolution}p  •  {ErrorMessage}"
-        : $"{Resolution}p  •  {CreatedAt.ToLocalTime():MMM d, yyyy • h:mm tt}";
+        ? $"{KindLabel}  •  {ErrorMessage}"
+        : $"{KindLabel}  •  {CreatedAt.ToLocalTime():MMM d, yyyy • h:mm tt}";
 
     /// <summary>0-100, for direct binding to a <c>ProgressBar</c> without a converter.</summary>
     public double ProgressPercent => Progress * 100;

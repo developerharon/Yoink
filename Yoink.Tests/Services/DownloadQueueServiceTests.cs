@@ -214,6 +214,37 @@ public class DownloadQueueServiceTests : IDisposable
     }
 
     /// <summary>
+    /// End-to-end for the generic-file path (README's "general download manager" step): a real
+    /// DownloadQueueService, its real background loop, and a real DownloadEngine downloading from an
+    /// actual local HTTP server (see DownloadEngineTests' RangeSupportingTestServer) — not yt-dlp at
+    /// all. Confirms DownloadKind.File items are routed to ProcessFileItemAsync, resolve a filename
+    /// from the URL when none was pre-resolved, and land the real bytes on disk.
+    /// </summary>
+    [Fact(Timeout = 20_000)]
+    public async Task EnqueueAsync_FileKind_DownloadsARealFile_ViaDownloadEngine()
+    {
+        var content = new byte[512 * 1024];
+        new Random(7).NextBytes(content);
+        using var server = new RangeSupportingTestServer(content);
+
+        var downloadFolder = Path.Combine(_tempDir, "downloads");
+        Directory.CreateDirectory(downloadFolder);
+        SettingsService.Save(new AppSettings { DownloadFolder = downloadFolder });
+
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+
+        var enqueued = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, kind: DownloadKind.File);
+        Assert.Equal(DownloadKind.File, enqueued.Kind);
+
+        var completed = await queue.WaitForCompletionAsync(enqueued.Id);
+
+        Assert.Equal(DownloadQueueStatus.Completed, completed.Status);
+        Assert.Equal("file.bin", completed.Title); // resolved from the URL's own last path segment
+        Assert.NotNull(completed.FilePath);
+        Assert.Equal(content, await File.ReadAllBytesAsync(completed.FilePath!));
+    }
+
+    /// <summary>
     /// Regression test for a real report: with the default MaxConcurrentDownloads of 1, finishing
     /// one download didn't start the next Pending one — it just sat there. Root cause was
     /// ProcessItemAsync's finally block never releasing <c>_workAvailable</c>, so

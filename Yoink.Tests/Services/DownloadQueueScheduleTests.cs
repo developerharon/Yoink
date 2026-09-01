@@ -145,6 +145,40 @@ public class BuildHelpersTests
     }
 
     [Fact]
+    public void BuildFileDestinationPath_KeepsTheGivenFileNameVerbatim_UnlikeBuildDestinationPath()
+    {
+        // Unlike the video path, nothing gets appended — "Yoink.AppImage" should stay exactly that,
+        // not gain a second extension.
+        var path = DownloadQueueService.BuildFileDestinationPath("Yoink.AppImage", System.IO.Path.GetTempPath());
+
+        Assert.Equal("Yoink.AppImage", System.IO.Path.GetFileName(path));
+    }
+
+    [Fact]
+    public void BuildFileDestinationPath_StripsInvalidFileNameCharacters()
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        var fileName = "Some" + new string(invalid) + "File.pdf";
+
+        var path = DownloadQueueService.BuildFileDestinationPath(fileName, System.IO.Path.GetTempPath());
+
+        foreach (var c in invalid)
+            Assert.DoesNotContain(c, System.IO.Path.GetFileName(path));
+    }
+
+    [Fact]
+    public void BuildFileDestinationPath_FallsBackToDownload_WhenNameIsEntirelyInvalidCharacters()
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        if (invalid.Length == 0)
+            return; // no platform-invalid characters to construct this case with
+
+        var path = DownloadQueueService.BuildFileDestinationPath(new string(invalid), System.IO.Path.GetTempPath());
+
+        Assert.Equal("download", System.IO.Path.GetFileName(path));
+    }
+
+    [Fact]
     public void ResolveDownloadFolder_FallsBackToPlatformDefault_WhenUnset()
     {
         var settings = new AppSettings { DownloadFolder = null };

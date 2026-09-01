@@ -111,6 +111,25 @@ public class DownloadQueueItemTests
     }
 
     [Fact]
+    public void Subtitle_ShowsFile_NotResolution_ForFileKind()
+    {
+        var item = Make(DownloadQueueStatus.Completed);
+        item.Kind = DownloadKind.File;
+        item.Resolution = 0; // meaningless for File kind, per DownloadQueueItem's own doc comment
+
+        Assert.StartsWith("File", item.Subtitle);
+        Assert.DoesNotContain("0p", item.Subtitle);
+    }
+
+    [Fact]
+    public void Kind_DefaultsToVideo_ForBackwardCompatibility()
+    {
+        // Every row created before DownloadKind existed needs to keep behaving exactly as it did —
+        // the DB migration in DownloadQueueService defaults the new column to "Video" for the same reason.
+        Assert.Equal(DownloadKind.Video, new DownloadQueueItem().Kind);
+    }
+
+    [Fact]
     public void ShowSize_IsFalse_WhenTotalBytesNotYetKnown()
     {
         var item = Make(DownloadQueueStatus.Active);
