@@ -73,12 +73,14 @@ macOS rather than being tied to Windows Forms.
 
 ## Download
 
-There's no pre-built download yet — packaging is still pending, Ubuntu first (a self-updating AppImage),
-with Windows and macOS to follow once that's sorted. Once it's out, it'll be a straight download from this
-repo's [Releases page](https://github.com/developerharon/Yoink/releases) — no separate
-site or account needed — and the app checks for new releases on its own from then on, prompting before it
-downloads or installs anything. Until then, running it from source is the way to use it — see "Using it"
-below.
+Grab the latest self-updating AppImage from this repo's
+[Releases page](https://github.com/developerharon/Yoink/releases/latest) — no separate site or account
+needed. Make it executable (`chmod +x Yoink.AppImage`) and run it; the app checks for new releases on its
+own from then on, prompting before it downloads or installs anything.
+
+Linux (Ubuntu/AppImage) is the only packaged platform for now — Windows and macOS builds are pending
+real-hardware verification. Until those are out, running from source is the way to use it there too — see
+"Using it" below.
 
 ## Using it
 
