@@ -39,6 +39,7 @@ public partial class SettingsView : UserControl
         TxtDownloadFolder.Text = DownloadQueueService.ResolveDownloadFolder(settings);
 
         NudMaxConcurrent.Value = settings.MaxConcurrentDownloads;
+        NudMaxConnectionsPerDownload.Value = settings.MaxConnectionsPerDownload;
         NudPerDownloadLimit.Value = settings.PerDownloadSpeedLimitKBps;
         NudGlobalLimit.Value = settings.GlobalSpeedLimitKBps;
 
@@ -136,6 +137,9 @@ public partial class SettingsView : UserControl
 
     private void NudMaxConcurrent_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) =>
         UpdateSettings(s => s.MaxConcurrentDownloads = (int)(NudMaxConcurrent.Value ?? 1));
+
+    private void NudMaxConnectionsPerDownload_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) =>
+        UpdateSettings(s => s.MaxConnectionsPerDownload = (int)(NudMaxConnectionsPerDownload.Value ?? 4));
 
     private void NudPerDownloadLimit_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) =>
         UpdateSettings(s => s.PerDownloadSpeedLimitKBps = ToNullableLimit(NudPerDownloadLimit.Value));
