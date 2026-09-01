@@ -276,6 +276,19 @@ public sealed class YtDlpClient
 
         var arguments = new List<string>
         {
+            // Without this, a URL carrying a "list=" query parameter (attached automatically by
+            // YouTube any time you copy a link while a Mix/Radio/autoplay playlist is going — the
+            // common case, not an edge case) makes yt-dlp download the *entire* playlist into this
+            // same destination path instead of just the one video the user actually queued. The
+            // requested video still finishes for real (fast) and is fully playable, but yt-dlp's own
+            // process then keeps running through every other item in the list — sometimes hundreds —
+            // for as long as that takes, which is indistinguishable from "stuck" in the UI: the item
+            // just sits Active forever with its already-complete file, since yt-dlp is still genuinely
+            // busy (each subsequent item logs its own output), so neither the stdin fix nor the stall
+            // watchdog above catch it. GetVideoInfoAsync already passes this same flag for exactly
+            // this reason; DownloadAsync never did, which is the actual bug — confirmed by
+            // reproducing it directly against a real "list="-decorated URL from this app's own queue.
+            "--no-playlist",
             "-f", formatSelector,
             "--merge-output-format", containerFormat,
             "--newline",
