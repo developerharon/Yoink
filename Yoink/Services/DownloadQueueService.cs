@@ -79,6 +79,12 @@ public sealed class DownloadQueueService : IDisposable
     /// <summary>Raised whenever an item's status or progress changes — a future queue view binds to this.</summary>
     public event Action<DownloadQueueItem>? ItemChanged;
 
+    /// <summary>
+    /// Raised after <see cref="DeleteAsync"/> actually removes a row — carries just the id, unlike
+    /// <see cref="ItemChanged"/>'s full-snapshot payload, since there's no longer a row to snapshot.
+    /// </summary>
+    public event Action<long>? ItemRemoved;
+
     public Task<IReadOnlyList<DownloadQueueItem>> GetAllAsync(CancellationToken cancellationToken = default) =>
         WithLockAsync(async () =>
         {
@@ -235,6 +241,56 @@ public sealed class DownloadQueueService : IDisposable
             command.Parameters.AddWithValue("$id", id);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
+
+    /// <summary>
+    /// Removes a row from the queue/history entirely — the "clean up my list" ask this exists for,
+    /// distinct from every other operation here, which only ever changes a row's status. Refuses a
+    /// row that's currently downloading (mirrors <see cref="DownloadQueueItem.CanDelete"/>, which
+    /// hides the button for exactly this reason in <c>Views.MainWindow</c>) rather than deleting the
+    /// database row out from under an in-flight yt-dlp process still writing to
+    /// <see cref="DownloadQueueItem.FilePath"/>.
+    ///
+    /// <paramref name="deleteFile"/> additionally deletes the downloaded file itself — off by
+    /// default, since "clean up the list, keep the file" is the common case this was actually asked
+    /// for; deleting the file too is the rarer, explicitly-opted-into one. File deletion is
+    /// best-effort, same as <c>Views.MainWindow.BtnShowInFolder_Click</c>'s own filesystem hand-off —
+    /// a missing/locked file shouldn't block the row itself from going away.
+    /// </summary>
+    public async Task DeleteAsync(long id, bool deleteFile = false, CancellationToken cancellationToken = default)
+    {
+        if (_activeCancellations.ContainsKey(id))
+            return;
+
+        var filePath = await WithLockAsync(async () =>
+        {
+            var existing = await GetItemNoLockAsync(id, cancellationToken).ConfigureAwait(false);
+
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "DELETE FROM download_queue WHERE Id = $id";
+            command.Parameters.AddWithValue("$id", id);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            return existing?.FilePath;
+        }, cancellationToken).ConfigureAwait(false);
+
+        _pauseRequested.TryRemove(id, out _);
+        _waiters.TryRemove(id, out _);
+
+        if (deleteFile && !string.IsNullOrWhiteSpace(filePath))
+        {
+            try
+            {
+                if (File.Exists(filePath))
+                    File.Delete(filePath);
+            }
+            catch
+            {
+                // Best-effort — see the doc comment above.
+            }
+        }
+
+        ItemRemoved?.Invoke(id);
+    }
 
     /// <summary>
     /// Drives up to <c>AppSettings.MaxConcurrentDownloads</c> items at once (README roadmap step 7)

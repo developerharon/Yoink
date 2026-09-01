@@ -105,4 +105,12 @@ public sealed class DownloadQueueItem
     public bool CanCancel => Status is DownloadQueueStatus.Pending or DownloadQueueStatus.Active or DownloadQueueStatus.Paused;
     public bool CanRetry => Status is DownloadQueueStatus.Failed or DownloadQueueStatus.Canceled;
     public bool CanShowInFolder => Status == DownloadQueueStatus.Completed;
+
+    /// <summary>
+    /// Whether this row can be removed from the list (optionally along with its downloaded file —
+    /// see <see cref="Services.DownloadQueueService.DeleteAsync"/>). Only terminal states — the
+    /// opposite of <see cref="CanCancel"/> — so a still-pending/active/paused item has to be
+    /// canceled first rather than deleted out from under an in-flight yt-dlp process.
+    /// </summary>
+    public bool CanDelete => !CanCancel;
 }

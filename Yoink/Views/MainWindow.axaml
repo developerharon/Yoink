@@ -184,6 +184,25 @@
                                                             Click="BtnRetry_Click" />
                                                     <Button Content="Show in folder" FontSize="12" IsVisible="{Binding CanShowInFolder}"
                                                             Click="BtnShowInFolder_Click" />
+                                                    <!-- Terminal-state-only (CanDelete — see that
+                                                         property's doc comment). Both actions live
+                                                         behind one flyout, rather than a second
+                                                         always-visible button, so this already-busy
+                                                         row doesn't grow even more crowded — "Remove
+                                                         from list" is the common case ("clean up my
+                                                         list, keep the file"), "Delete file and
+                                                         remove" the rare, explicitly-opted-into one
+                                                         (BtnDeleteWithFile_Click confirms first,
+                                                         since it's the one genuinely destructive,
+                                                         hard-to-reverse action in this row). -->
+                                                    <Button Content="Delete" FontSize="12" IsVisible="{Binding CanDelete}">
+                                                        <Button.Flyout>
+                                                            <MenuFlyout Placement="BottomEdgeAlignedRight">
+                                                                <MenuItem Header="Remove from list" Click="BtnRemoveFromList_Click" />
+                                                                <MenuItem Header="Delete file and remove" Click="BtnDeleteWithFile_Click" />
+                                                            </MenuFlyout>
+                                                        </Button.Flyout>
+                                                    </Button>
                                                 </StackPanel>
                                             </Grid>
                                             <ProgressBar Minimum="0" Maximum="100" Value="{Binding ProgressPercent, Mode=OneWay}"
