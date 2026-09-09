@@ -472,6 +472,25 @@ project root — that's exactly the flat structure this reorg moved away from.
     `TorrentSettingsBuilder.CreateContainingDirectory = false` behaves as intended), reaching exactly
     100% with the final file's size matching precisely, and the "hard stop" `finally` cleanup running
     to completion with no hang or exception.
+  - **Metadata resolution timeout (`MetadataResolutionTimeout`, 2 minutes)** — a real, user-reported
+    bug, not preemptive: a magnet link with no trackers relies entirely on DHT for peer discovery, and
+    `TorrentManager.WaitForMetadataAsync` on its own has nothing bounding it beyond the caller's own
+    cancellation token (only fires on an explicit pause/cancel/app shutdown) — a torrent that can't
+    find any peers just sat at "Fetching torrent metadata…" forever, with no error and no way to tell
+    it apart from one that was still legitimately working. `WaitForMetadataWithTimeoutAsync` wraps the
+    wait in a linked, `CancelAfter`-bound token and throws a `TimeoutException` with an actionable
+    message (mentions the common real cause — a network that restricts the UDP traffic DHT needs, e.g.
+    corporate firewalls/some VPNs) if it fires, careful to check the *outer* `cancellationToken`
+    specifically (not the linked one) to tell a genuine timeout apart from a real pause/cancel racing
+    it. `DownloadAsync` takes an optional `metadataResolutionTimeout` override (defaults to the 2-minute
+    constant when null) purely for test determinism, the same reason `YtDlpClient.DownloadAsync`'s own
+    `stallTimeout` parameter exists. **Verified for real**, both the bug and the fix: a real trackerless
+    magnet link reproduced the hang directly in this session (confirmed via `ClientEngine.Dht.NodeCount`/
+    `State` staying at zero/`Initialising` for 100+ seconds — DHT bootstrap itself isn't broken,
+    MonoTorrent ships real default bootstrap routers confirmed by reading its source, but it needs
+    outbound UDP to work at all), then the same magnet, same environment, threw the expected
+    `TimeoutException` at exactly the configured 2-minute mark with the `finally` cleanup completing
+    cleanly right after.
 - `DependencyProvisioningService.cs` — provisions yt-dlp/ffmpeg for a packaged install so a plain
   "download the AppImage/Setup.exe and run it" user never has to separately install (or keep updating)
   either one themselves, added once this became a real problem: this dev environment genuinely had
