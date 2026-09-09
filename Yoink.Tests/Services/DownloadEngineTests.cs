@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -103,6 +104,52 @@ public class DownloadEngineTests
             // posts each report independently), so only the final file content is asserted exactly —
             // this just confirms progress was reported at all, at some plausible value.
             Assert.True(lastFraction is > 0 and <= 1.0);
+        }
+        finally
+        {
+            CleanUp(destination);
+        }
+    }
+
+    /// <summary>
+    /// The IDM-style segmented-progress-bar visualization (Controls.SegmentedProgressBar) added in
+    /// direct response to user feedback that a segmented download's queue row gave no visible sign
+    /// it was actually splitting across connections — this is the DownloadEngine half of that: real
+    /// per-segment progress genuinely reaches a progress subscriber, not just the aggregate fraction.
+    /// 20MB (well above the 5MB-per-segment floor — unlike the 6MB used above, which
+    /// PlanSegmentsTests confirms integer-divides down to a single segment) with maxConnections: 4
+    /// guarantees actual multi-segment splitting, not just the segmented code path with one segment.
+    /// </summary>
+    [Fact]
+    public async Task DownloadAsync_Segmented_ReportsPerSegmentProgress()
+    {
+        var content = RandomBytes(20 * 1024 * 1024);
+        using var server = new RangeSupportingTestServer(content);
+        using var engine = new DownloadEngine();
+
+        var destination = TempPath("segmented-progress");
+        try
+        {
+            IReadOnlyList<DownloadSegmentProgress>? lastSegments = null;
+            var progress = new Progress<DownloadEngineProgress>(p =>
+            {
+                if (p.Segments is not null)
+                    lastSegments = p.Segments;
+            });
+
+            await engine.DownloadAsync(server.Uri, destination, progress, maxConnections: 4);
+
+            Assert.NotNull(lastSegments);
+            Assert.Equal(4, lastSegments!.Count);
+            // The final report (DownloadSegmentedAsync's own unthrottled "everything's done" flush)
+            // is guaranteed to have landed last regardless of how the throttled ticks in between
+            // happened to interleave, so every segment should read as fully complete here.
+            Assert.All(lastSegments, s => Assert.Equal(1.0, s.Fraction));
+            // Every byte accounted for exactly once, in order, with no gaps or overlaps.
+            Assert.Equal(0, lastSegments[0].StartByte);
+            Assert.Equal(content.Length - 1, lastSegments[^1].EndByte);
+            for (var i = 1; i < lastSegments.Count; i++)
+                Assert.Equal(lastSegments[i - 1].EndByte + 1, lastSegments[i].StartByte);
         }
         finally
         {

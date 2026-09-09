@@ -50,6 +50,13 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
   parsing a magnet URI's own `dn=` parameter is plain string/URI parsing); everything else on that
   class talks to the network/a real swarm, so it isn't covered by the automated suite — see
   `TorrentEngine.cs`'s own doc comment for how it was instead verified for real.
+- `Services/DownloadEngineTests` — `PlanSegments`/`GetFileNameFromUri`/content-disposition parsing
+  (pure, no network), plus real segmented-download/resume/rate-limiting behavior against a real local
+  HTTP server (a plain `HttpListener` on loopback, `RangeSupportingTestServer`) rather than a mock —
+  including a real multi-connection download (20MB, above the 5MB-per-segment floor by enough to
+  actually force 4 segments, not just take the segmented code path with one) confirming
+  `DownloadEngineProgress.Segments` genuinely reaches a progress subscriber with the right byte ranges
+  and reads 100% on every segment by the time the download completes.
 - `Services/DownloadQueueScheduleTests` — `DownloadQueueService.IsWithinWindow` (same-day and
   overnight-wrap schedule windows, boundary-inclusive/exclusive edges), `ComputeRateLimitKBps` (every
   combination of per-download/global caps), `BuildFormatSelector`/`BuildDestinationPath`/
@@ -132,6 +139,9 @@ window and several service/model classes, so it's organized by role, folder-per-
   yt-dlp wrapper, the queue. No Avalonia UI types belong here.
 - `Yoink/Models/` (namespace `Yoink.Models`) — plain data classes/enums shared across services and views.
 - `Yoink/Converters/` (namespace `Yoink.Converters`) — `IValueConverter` implementations for XAML bindings.
+- `Yoink/Controls/` (namespace `Yoink.Controls`) — custom Avalonia controls with their own hand-written
+  `Render` logic (currently just `SegmentedProgressBar` — see `DownloadEngine.cs`'s own notes above),
+  distinct from `Views/`'s windows/dialogs and from a plain XAML `UserControl`.
 - `Yoink/Program.cs`, `Yoink/App.axaml`/`.axaml.cs`, `Yoink/app.manifest` — stay at the project root
   (namespace `Yoink`); they're bootstrap, not a feature area.
 
@@ -377,13 +387,51 @@ project root — that's exactly the flat structure this reorg moved away from.
   `~/.config/user-dirs.dirs` by `ParseXdgDownloadDir`, else the same `~/Downloads` guess) — a relocated or
   localized Downloads folder isn't a given there the way it is on the other two platforms.
 - `DownloadEngine.cs` — the generic core download engine from README roadmap step 1: a source-agnostic,
-  resumable single-file HTTP downloader (range-request resume, progress via `IProgress<double>`,
-  retry-with-backoff, cancellation). It writes to `<destination>.partial` and only moves the file into place
-  on success. **Not currently wired into anything** — YouTube downloads go through `yt-dlp`'s own downloader
-  instead (see below), since reimplementing yt-dlp's segment-download-and-mux behavior on top of this engine
-  would just be redoing what it already does correctly. This class is the foundation for a later roadmap
-  step: plain, non-YouTube direct-link downloads (e.g. the browser-extension/clipboard-watching "auto-catch"
-  step).
+  resumable HTTP downloader everything that isn't YouTube (`DownloadKind.File`, via
+  `DownloadQueueService.ProcessFileItemAsync`) goes through — YouTube downloads still go through
+  `yt-dlp`'s own downloader instead (see below), since reimplementing its segment-download-and-mux
+  behavior on top of this engine would just be redoing what it already does correctly. Writes to
+  `<destination>.partial` and only moves the file into place on success, same invariant `YtDlpClient`'s
+  own downloads already follow.
+  - **Segmented downloads**: when the server both reports a size and honors HTTP Range requests
+    (checked via `ProbeAsync`, a single 1-byte ranged GET rather than HEAD, since not every server
+    implements HEAD), the file splits into up to `maxConnections` concurrent range requests, each
+    writing directly into its own slice of the preallocated `.partial` file via `RandomAccess` —
+    positional I/O, so multiple segment tasks can safely write to different offsets of the same file
+    handle at once with no shared file-pointer race. A `<destination>.partial.segments.json` sidecar
+    records each segment's own start/end/downloaded-so-far, the only way a resumed pause/retry can know
+    how far each individual segment got (checking the partial file's overall length doesn't work once
+    segments write out of order into non-contiguous offsets). Falls back to the original
+    single-connection sequential-append behavior when the server can't do either (no `Content-Length`,
+    or a Range request comes back as a plain 200) — no sidecar file needed for that path.
+  - **Per-segment progress (`DownloadEngineProgress.Segments`)** — added directly in response to real
+    user feedback: the queue view's plain flat progress bar gave no visible sign a "big download" was
+    actually splitting across several connections at once, even though it had been doing exactly that
+    since this class's segmented rewrite. Each `ReportProgress` call inside `DownloadSegmentedAsync`
+    still reports the plain aggregate `Fraction`/`BytesDownloaded`/`TotalBytes` on every single chunk,
+    completely unthrottled, exactly as before this existed — but building the full per-segment snapshot
+    (one small allocation) is throttled to `SegmentSnapshotInterval` (100ms), since that inner callback
+    fires on every buffer read across every concurrently-downloading segment, which on a fast
+    connection can be many times a second. An unconditional final report with every segment at exactly
+    100% fires right before the method returns successfully, so the throttle can never leave the
+    segmented-progress-bar visualization sitting a tick shy of full on whichever segment happened to
+    finish last. `DownloadQueueService.ProcessFileItemAsync`'s progress callback only overwrites
+    `DownloadQueueItem.SegmentProgress` (a `Models.DownloadSegmentInfo` list — a separate Models-layer
+    type rather than reusing this Services one directly, keeping `Yoink.Models` from needing to
+    reference `Yoink.Services`) when `Segments` is actually non-null on a given tick, so a
+    throttled-away tick leaves the queue row's last known snapshot in place instead of blanking it.
+    Rendered by `Controls.SegmentedProgressBar` (see `Yoink/Controls/` below) — one continuous bar, not
+    several separate pill-shaped chunks with gaps, each segment's slot width proportional to its own
+    byte range (segments aren't always equal size — the last one especially often isn't) and filled
+    independently up to its own live fraction, with a thin divider line at each internal boundary.
+    Shown instead of the plain `ProgressBar` via `DownloadQueueItem.ShowSegments`/`ShowPlainProgress`
+    (exact complements of each other) — only for a `DownloadKind.File` row actually split across more
+    than one connection; a single-segment/sequential-fallback file row, and every video/torrent row,
+    still uses the plain bar. Verified for real via a headless render of the actual `Views.MainWindow`
+    queue row with a fake multi-segment item at varying fill levels per segment (see the
+    `headless-visual-verification` project memory for the technique) — confirmed against the actual
+    rendered bitmap, not just XAML compiling, the same standard this file already holds every other
+    layout change to.
 - `YtDlpClient.cs` — the YouTube extraction layer from README roadmap step 2. Shells out to the `yt-dlp`
   CLI — resolved via `UseResolvedPaths` (see `DependencyProvisioningService` below) to either a PATH
   lookup or a Yoink-managed copy, defaulting to a bare PATH lookup until that runs — for everything that
@@ -752,7 +800,10 @@ project root — that's exactly the flat structure this reorg moved away from.
   (nullable, set once at enqueue time via `Views.AddDownloadDialog`'s "Save to" picker) is this one
   download's folder override — null means "use whatever `AppSettings.DownloadFolder`/Settings resolves
   to", same as every row before this existed; see `DownloadQueueService.ResolveItemDestinationFolder`
-  for exactly how the two combine.
+  for exactly how the two combine. `SegmentProgress` (`File`-only, live-only, a `DownloadSegmentInfo`
+  list) drives `ShowSegments`/`Controls.SegmentedProgressBar` — see `DownloadEngine.cs`'s own notes
+  above for the full mechanism; `ShowPlainProgress` is its exact complement, so exactly one of the
+  plain `ProgressBar` or the segmented one ever shows for a given row.
 
 ### Converters (`Yoink/Converters/`)
 

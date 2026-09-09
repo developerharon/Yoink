@@ -21,7 +21,23 @@ namespace Yoink.Services;
 /// knows exactly how many bytes it has itself written, whether or not the server ever told it a
 /// total.
 /// </summary>
-public readonly record struct DownloadEngineProgress(double Fraction, long BytesDownloaded, long? TotalBytes);
+/// <param name="Segments">
+/// A live snapshot of every planned segment's own byte range and fraction — the IDM-style "several
+/// small bars filling up at once" visualization <c>Views.MainWindow</c>'s queue row shows via
+/// <c>Controls.SegmentedProgressBar</c>. Null on most ticks (see <see cref="DownloadSegmentedAsync"/>'s
+/// own throttling note) and always null for the single-connection sequential fallback (nothing to
+/// show as "segments" when there's only ever the one) — <c>DownloadQueueService</c>'s progress
+/// callback only overwrites <c>DownloadQueueItem.SegmentProgress</c> when this is actually non-null,
+/// so a throttled-away tick just leaves the UI's last known snapshot in place rather than blanking it.
+/// </param>
+public readonly record struct DownloadEngineProgress(
+    double Fraction,
+    long BytesDownloaded,
+    long? TotalBytes,
+    IReadOnlyList<DownloadSegmentProgress>? Segments = null);
+
+/// <summary>One planned segment's own byte range and how far it's individually gotten (0-1) — the public projection of <see cref="SegmentState"/> a progress subscriber actually gets to see.</summary>
+public readonly record struct DownloadSegmentProgress(long StartByte, long EndByte, double Fraction);
 
 /// <summary>
 /// The core download engine: a generic, resumable HTTP downloader everything else (YouTube streams
@@ -50,6 +66,13 @@ public readonly record struct DownloadEngineProgress(double Fraction, long Bytes
 /// <see cref="DownloadAttemptAsync"/>, which reads back whatever the sidecar/partial file already
 /// has and only re-fetches what's still missing, so a transient failure partway through a segmented
 /// download doesn't throw away the segments that already finished.
+///
+/// <b>Per-segment progress</b>: <see cref="DownloadEngineProgress.Segments"/> exposes each segment's
+/// own byte range and live fraction — this was already happening internally (each concurrent
+/// connection tracks its own <see cref="SegmentState"/>) but never surfaced to a caller until
+/// user-reported confusion made it clear the queue view's single flat progress bar gave no sign
+/// that a "big download" was actually splitting across several connections at once. Rendered by
+/// <c>Controls.SegmentedProgressBar</c> as the IDM-style several-small-bars-filling-up-at-once look.
 /// </summary>
 public sealed class DownloadEngine : IDisposable
 {
@@ -63,6 +86,14 @@ public sealed class DownloadEngine : IDisposable
     /// reasonable floor, not derived from any measurement.
     /// </summary>
     private const long MinBytesPerSegment = 5 * 1024 * 1024;
+
+    /// <summary>
+    /// How often <see cref="DownloadSegmentedAsync"/> rebuilds and reports a full per-segment
+    /// snapshot — see the throttling note where it's used. Fast enough to look smooth as a
+    /// progress-bar animation, far coarser than the per-chunk cadence the plain aggregate
+    /// Fraction/BytesDownloaded values still report at.
+    /// </summary>
+    private static readonly TimeSpan SegmentSnapshotInterval = TimeSpan.FromMilliseconds(100);
 
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
@@ -244,19 +275,45 @@ public sealed class DownloadEngine : IDisposable
         var totalDownloaded = metadata.Segments.Sum(s => s.Downloaded);
         var progressLock = new object();
 
+        // Snapshotting every segment's own progress is a small allocation (one DownloadSegmentProgress
+        // per segment, so at most a handful) — cheap in isolation, but ReportProgress itself fires on
+        // every single buffer read across every concurrently-downloading segment, which on a fast
+        // connection can be many times a second. Throttled to SegmentSnapshotInterval so the
+        // segmented-progress-bar visualization stays smooth without meaningfully adding to this
+        // method's own per-chunk overhead; the plain Fraction/BytesDownloaded/TotalBytes below are
+        // still reported on every single tick, completely unthrottled, exactly as before this existed.
+        var lastSegmentSnapshot = 0L;
+
         void ReportProgress(long deltaBytes)
         {
             long snapshot;
+            IReadOnlyList<DownloadSegmentProgress>? segments = null;
             lock (progressLock)
             {
                 totalDownloaded += deltaBytes;
                 snapshot = totalDownloaded;
+
+                var now = Environment.TickCount64;
+                if (now - lastSegmentSnapshot >= SegmentSnapshotInterval.TotalMilliseconds)
+                {
+                    lastSegmentSnapshot = now;
+                    // SegmentState.Downloaded is read here from whichever segment task's own thread
+                    // happens to call ReportProgress, concurrently with every other segment task
+                    // mutating its own Downloaded field on its own thread — a benign race for a
+                    // monotonically-increasing counter used only for a progress display: a torn
+                    // 64-bit read isn't possible on any platform this app targets, so at worst one
+                    // segment's number is a tick behind, self-correcting on the very next snapshot.
+                    segments = metadata.Segments
+                        .Select(s => new DownloadSegmentProgress(s.Start, s.End, s.Length > 0 ? (double)s.Downloaded / s.Length : 1.0))
+                        .ToArray();
+                }
             }
 
             progress?.Report(new DownloadEngineProgress(
                 metadata.TotalBytes > 0 ? (double)snapshot / metadata.TotalBytes : 0,
                 snapshot,
-                metadata.TotalBytes));
+                metadata.TotalBytes,
+                segments));
         }
 
         using var handle = File.OpenHandle(partialPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
@@ -304,6 +361,13 @@ public sealed class DownloadEngine : IDisposable
             throw firstFailure;
 
         cancellationToken.ThrowIfCancellationRequested();
+
+        // One final, unthrottled report showing every segment fully filled — SegmentSnapshotInterval
+        // could otherwise leave the segmented-progress-bar visualization sitting a tick shy of 100%
+        // on whichever segment happened to finish last, right as the item flips to Completed.
+        progress?.Report(new DownloadEngineProgress(
+            1.0, metadata.TotalBytes, metadata.TotalBytes,
+            metadata.Segments.Select(s => new DownloadSegmentProgress(s.Start, s.End, 1.0)).ToArray()));
 
         DeleteMetadataFile(metadataPath);
     }

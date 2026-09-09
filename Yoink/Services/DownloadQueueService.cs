@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
@@ -601,6 +602,14 @@ public sealed class DownloadQueueService : IDisposable
             item.Progress = p.Fraction;
             item.DownloadedBytes = p.BytesDownloaded;
             item.TotalBytes = p.TotalBytes;
+
+            // Only overwritten on a tick DownloadEngine actually included a fresh snapshot (it
+            // throttles how often it builds one — see DownloadEngineProgress.Segments' own doc
+            // comment) rather than on every tick, so a throttled-away tick leaves the queue row's
+            // last known segmented-progress-bar snapshot in place instead of blanking it.
+            if (p.Segments is not null)
+                item.SegmentProgress = p.Segments.Select(s => new DownloadSegmentInfo(s.StartByte, s.EndByte, s.Fraction)).ToArray();
+
             RaiseChanged(item);
         });
 
