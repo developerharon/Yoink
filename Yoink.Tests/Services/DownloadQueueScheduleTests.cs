@@ -213,6 +213,34 @@ public class BuildHelpersTests
     }
 
     [Fact]
+    public void ResolveItemDestinationFolder_UsesTheItemsOwnOverride_WhenSet()
+    {
+        var configured = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "AppWideDefault");
+        var overrideFolder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "MusicFolder");
+        var settings = new AppSettings { DownloadFolder = configured };
+        var item = new DownloadQueueItem { DestinationFolder = overrideFolder };
+
+        var resolved = DownloadQueueService.ResolveItemDestinationFolder(item, settings);
+
+        Assert.Equal(overrideFolder, resolved);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveItemDestinationFolder_FallsBackToTheAppWideDefault_WhenNoOverride(string? blank)
+    {
+        var configured = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "AppWideDefault");
+        var settings = new AppSettings { DownloadFolder = configured };
+        var item = new DownloadQueueItem { DestinationFolder = blank };
+
+        var resolved = DownloadQueueService.ResolveItemDestinationFolder(item, settings);
+
+        Assert.Equal(configured, resolved);
+    }
+
+    [Fact]
     public void InsertPathSuffix_ReturnsPathUnchanged_ForSuffixZeroOrLess()
     {
         var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Title.mp4");

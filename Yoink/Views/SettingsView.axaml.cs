@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -25,6 +26,15 @@ namespace Yoink.Views;
 /// </summary>
 public partial class SettingsView : UserControl
 {
+    /// <summary>
+    /// Guards <see cref="TxtExtraTrackers_TextChanged"/> against firing while the constructor or
+    /// <see cref="BtnResetExtraTrackers_Click"/> is itself the one setting <c>TxtExtraTrackers.Text</c>
+    /// — without this, setting the text to seed/reset it would immediately re-trigger the handler and
+    /// save the exact same value right back. Harmless either way, just pointless churn; simpler to
+    /// suppress than to make the handler itself figure out whether anything actually changed.
+    /// </summary>
+    private bool _suppressExtraTrackersTextChanged;
+
     public SettingsView()
     {
         InitializeComponent();
@@ -42,6 +52,13 @@ public partial class SettingsView : UserControl
         NudMaxConnectionsPerDownload.Value = settings.MaxConnectionsPerDownload;
         NudPerDownloadLimit.Value = settings.PerDownloadSpeedLimitKBps;
         NudGlobalLimit.Value = settings.GlobalSpeedLimitKBps;
+
+        // Suppressed while setting the initial text (see the field's own doc comment) — otherwise
+        // this assignment alone would fire TxtExtraTrackers_TextChanged and immediately re-save the
+        // exact same list right back, harmless but pointless on every single SettingsView construction.
+        _suppressExtraTrackersTextChanged = true;
+        TxtExtraTrackers.Text = string.Join(Environment.NewLine, settings.ExtraTorrentTrackers);
+        _suppressExtraTrackersTextChanged = false;
 
         ChkSchedulingEnabled.IsChecked = settings.SchedulingEnabled;
         TpScheduleStart.SelectedTime = settings.ScheduleStart.ToTimeSpan();
@@ -146,6 +163,36 @@ public partial class SettingsView : UserControl
 
     private void NudGlobalLimit_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) =>
         UpdateSettings(s => s.GlobalSpeedLimitKBps = ToNullableLimit(NudGlobalLimit.Value));
+
+    /// <summary>
+    /// One tracker URL per line, same convention the text itself is seeded with (`string.Join` on
+    /// <see cref="Environment.NewLine"/>) — blank lines and surrounding whitespace on each are
+    /// dropped rather than saved verbatim, so an accidental extra blank line (or trailing whitespace
+    /// from a paste) doesn't get handed to <c>TorrentEngine</c>'s own best-effort-per-tracker
+    /// <c>Uri</c> parsing as a bogus entry. An empty box saves an empty list, which is exactly how
+    /// this feature is meant to be turned off entirely — see <c>AppSettings.ExtraTorrentTrackers</c>'s
+    /// own doc comment.
+    /// </summary>
+    private void TxtExtraTrackers_TextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (_suppressExtraTrackersTextChanged)
+            return;
+
+        var trackers = (TxtExtraTrackers.Text ?? string.Empty)
+            .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .ToList();
+
+        UpdateSettings(s => s.ExtraTorrentTrackers = trackers);
+    }
+
+    private void BtnResetExtraTrackers_Click(object? sender, RoutedEventArgs e)
+    {
+        _suppressExtraTrackersTextChanged = true;
+        TxtExtraTrackers.Text = string.Join(Environment.NewLine, AppSettings.DefaultExtraTorrentTrackers);
+        _suppressExtraTrackersTextChanged = false;
+
+        UpdateSettings(s => s.ExtraTorrentTrackers = AppSettings.DefaultExtraTorrentTrackers.ToList());
+    }
 
     private void ChkSchedulingEnabled_IsCheckedChanged(object? sender, RoutedEventArgs e)
     {

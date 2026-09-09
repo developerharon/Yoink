@@ -68,6 +68,23 @@
                             </ComboBox>
                         </StackPanel>
                     </StackPanel>
+
+                    <!-- Shown for every kind (Video/File/Torrent), not just PanelVideoOptions'
+                         video-only pickers above — every download lands somewhere. Read-only
+                         TextBox + Browse/Reset, same idiom as Views.SettingsView's own download
+                         folder row, seeded from whatever Settings currently resolves to (not a
+                         blank field) so the common case ("just use my configured default") needs
+                         no interaction at all. -->
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="Save to" Classes="Caption" />
+                        <Grid ColumnDefinitions="*,Auto,Auto">
+                            <TextBox Grid.Column="0" Name="TxtDestinationFolder" IsReadOnly="True" Margin="0,0,6,0" />
+                            <Button Grid.Column="1" Name="BtnBrowseDestinationFolder" Content="Browse" FontSize="12"
+                                    Click="BtnBrowseDestinationFolder_Click" Margin="0,0,6,0" />
+                            <Button Grid.Column="2" Name="BtnResetDestinationFolder" Content="Reset" FontSize="12"
+                                    Click="BtnResetDestinationFolder_Click" />
+                        </Grid>
+                    </StackPanel>
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">

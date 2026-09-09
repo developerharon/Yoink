@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Yoink.Models;
 
@@ -54,6 +55,16 @@ public enum DownloadKind
 }
 
 /// <summary>
+/// One segment's own byte range and live fraction (0-1) — the Models-layer projection of
+/// <see cref="Services.DownloadSegmentProgress"/>, copied over field-for-field by
+/// <see cref="Services.DownloadQueueService.ProcessFileItemAsync"/>'s progress callback. A separate
+/// type rather than reusing the Services one directly so <c>Yoink.Models</c> doesn't need to
+/// reference <c>Yoink.Services</c> — the same layering every other model in this file already keeps
+/// (see <c>DownloadQueueService.cs</c>'s own doc comment on where UI logic vs. persistence lives).
+/// </summary>
+public readonly record struct DownloadSegmentInfo(long StartByte, long EndByte, double Fraction);
+
+/// <summary>
 /// One row in the persisted download queue (README roadmap step 3). Plain data — no
 /// <c>INotifyPropertyChanged</c> ceremony; <see cref="Services.DownloadQueueService"/> owns
 /// reading/writing it, and the queue view (<c>Views.MainWindow</c>) reflects a change by replacing
@@ -89,6 +100,19 @@ public sealed class DownloadQueueItem
     /// filename (<see cref="Title"/>) already has, rather than one being forced onto it.
     /// </summary>
     public string ContainerFormat { get; set; } = "mp4";
+
+    /// <summary>
+    /// Where this specific download should land — set once, at enqueue time, in
+    /// <c>Views.AddDownloadDialog</c>'s "Save to" picker; null means "use whatever's configured in
+    /// Settings" (<see cref="Services.DownloadQueueService.ResolveDownloadFolder"/>'s own fallback
+    /// chain — <c>AppSettings.DownloadFolder</c> if set, else the platform's Downloads folder), the
+    /// same as before this existed. Lets one download go to, say, a Music folder and another to an
+    /// Apps folder without changing the app-wide default for everything else. See
+    /// <see cref="Services.DownloadQueueService.ResolveItemDestinationFolder"/> for exactly how this
+    /// combines with the app-wide setting. Fixed at enqueue time, never changed afterwards — same
+    /// "set once, read many times" shape as <see cref="ContainerFormat"/>.
+    /// </summary>
+    public string? DestinationFolder { get; set; }
 
     public string? FilePath { get; set; }
 
@@ -148,6 +172,21 @@ public sealed class DownloadQueueItem
     /// </summary>
     public string? PhaseText { get; set; }
 
+    /// <summary>
+    /// A live snapshot of every connection <see cref="Services.DownloadEngine"/> currently has open
+    /// for this <see cref="DownloadKind.File"/> row — the IDM-style "several small bars filling up at
+    /// once" visualization <c>Controls.SegmentedProgressBar</c> renders in place of the plain
+    /// <see cref="ProgressPercent"/> bar (see <see cref="ShowSegments"/>). Same live-only,
+    /// never-persisted reasoning as <see cref="DownloadedBytes"/>/<see cref="SeederCount"/> above, and
+    /// only ever overwritten when <see cref="Services.DownloadEngineProgress.Segments"/> is actually
+    /// non-null on a given tick (throttled — see that type's own doc comment) rather than on every
+    /// tick, so a throttled-away tick leaves the last known snapshot in place instead of blanking it.
+    /// Null for every other kind, and for a <see cref="DownloadKind.File"/> row whose server didn't
+    /// support ranged requests (the single-connection sequential fallback — nothing to show as
+    /// "segments" when there's only ever the one).
+    /// </summary>
+    public IReadOnlyList<DownloadSegmentInfo>? SegmentProgress { get; set; }
+
     public string DisplayTitle => string.IsNullOrEmpty(Title) ? Url : Title;
 
     public string StatusText => Status.ToString();
@@ -168,6 +207,20 @@ public sealed class DownloadQueueItem
     public double ProgressPercent => Progress * 100;
 
     public bool ShowProgress => Status is DownloadQueueStatus.Active or DownloadQueueStatus.Paused;
+
+    /// <summary>
+    /// True for a <see cref="DownloadKind.File"/> row currently split across more than one connection
+    /// — shown instead of the plain <see cref="ProgressPercent"/> bar as
+    /// <c>Controls.SegmentedProgressBar</c>'s IDM-style several-small-bars-filling-up-at-once
+    /// visualization (see <see cref="SegmentProgress"/>'s own doc comment). A single-segment/
+    /// sequential-fallback <see cref="DownloadKind.File"/> row, and every <see cref="DownloadKind.Video"/>/
+    /// <see cref="DownloadKind.Torrent"/> row, still uses the plain bar (<see cref="ShowPlainProgress"/>)
+    /// — segmentation is specifically a <see cref="Services.DownloadEngine"/> concept.
+    /// </summary>
+    public bool ShowSegments => ShowProgress && Kind == DownloadKind.File && SegmentProgress is { Count: > 1 };
+
+    /// <summary>The complement of <see cref="ShowSegments"/> — both bind to the same spot in the queue row (see <c>Views.MainWindow</c>'s row template), so exactly one of the two is ever visible.</summary>
+    public bool ShowPlainProgress => ShowProgress && !ShowSegments;
 
     /// <summary>Only once yt-dlp/the torrent engine has actually reported a size — see <see cref="TotalBytes"/>'s doc comment.</summary>
     public bool ShowSize => ShowProgress && TotalBytes is > 0 && string.IsNullOrEmpty(PhaseText);

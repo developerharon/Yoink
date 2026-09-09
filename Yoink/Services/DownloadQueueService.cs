@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
@@ -145,6 +146,10 @@ public sealed class DownloadQueueService : IDisposable
     /// <paramref name="title"/> already set too, since <see cref="ProcessVideoItemAsync"/> only ever
     /// looks at it once it already knows it doesn't need to resolve the title itself.
     /// </param>
+    /// <param name="destinationFolder">
+    /// This one download's folder override, or null to use whatever Settings says — see
+    /// <see cref="DownloadQueueItem.DestinationFolder"/>'s own doc comment.
+    /// </param>
     public async Task<DownloadQueueItem> EnqueueAsync(
         string url,
         int resolution,
@@ -152,6 +157,7 @@ public sealed class DownloadQueueService : IDisposable
         string containerFormat = "mp4",
         DownloadKind kind = DownloadKind.Video,
         string? infoJson = null,
+        string? destinationFolder = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -161,9 +167,9 @@ public sealed class DownloadQueueService : IDisposable
         {
             await using var command = _connection.CreateCommand();
             command.CommandText = """
-                INSERT INTO download_queue (Url, Title, Resolution, ContainerFormat, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt, Kind, InfoJson)
+                INSERT INTO download_queue (Url, Title, Resolution, ContainerFormat, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt, Kind, InfoJson, DestinationFolder)
                 VALUES ($url, $title, $resolution, $containerFormat, NULL, $status, 0, NULL,
-                        (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt, $kind, $infoJson);
+                        (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt, $kind, $infoJson, $destinationFolder);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$url", url);
@@ -174,6 +180,7 @@ public sealed class DownloadQueueService : IDisposable
             command.Parameters.AddWithValue("$createdAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture));
             command.Parameters.AddWithValue("$kind", kind.ToString());
             command.Parameters.AddWithValue("$infoJson", (object?)infoJson ?? DBNull.Value);
+            command.Parameters.AddWithValue("$destinationFolder", (object?)destinationFolder ?? DBNull.Value);
 
             return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
         }, cancellationToken).ConfigureAwait(false);
@@ -187,6 +194,7 @@ public sealed class DownloadQueueService : IDisposable
             ContainerFormat = containerFormat,
             Kind = kind,
             InfoJson = infoJson,
+            DestinationFolder = destinationFolder,
             Status = DownloadQueueStatus.Pending,
             CreatedAt = DateTimeOffset.Now
         };
@@ -540,7 +548,7 @@ public sealed class DownloadQueueService : IDisposable
 
         if (item.FilePath is null)
         {
-            var candidatePath = BuildDestinationPath(item.Title, ResolveDownloadFolder(settings), item.ContainerFormat);
+            var candidatePath = BuildDestinationPath(item.Title, ResolveItemDestinationFolder(item, settings), item.ContainerFormat);
             item.FilePath = await ReserveUniqueDestinationPathAsync(item.Id, candidatePath, cancellationToken).ConfigureAwait(false);
         }
 
@@ -585,7 +593,7 @@ public sealed class DownloadQueueService : IDisposable
 
         if (item.FilePath is null)
         {
-            var candidatePath = BuildFileDestinationPath(item.Title, ResolveDownloadFolder(settings));
+            var candidatePath = BuildFileDestinationPath(item.Title, ResolveItemDestinationFolder(item, settings));
             item.FilePath = await ReserveUniqueDestinationPathAsync(item.Id, candidatePath, cancellationToken).ConfigureAwait(false);
         }
 
@@ -594,6 +602,14 @@ public sealed class DownloadQueueService : IDisposable
             item.Progress = p.Fraction;
             item.DownloadedBytes = p.BytesDownloaded;
             item.TotalBytes = p.TotalBytes;
+
+            // Only overwritten on a tick DownloadEngine actually included a fresh snapshot (it
+            // throttles how often it builds one — see DownloadEngineProgress.Segments' own doc
+            // comment) rather than on every tick, so a throttled-away tick leaves the queue row's
+            // last known segmented-progress-bar snapshot in place instead of blanking it.
+            if (p.Segments is not null)
+                item.SegmentProgress = p.Segments.Select(s => new DownloadSegmentInfo(s.StartByte, s.EndByte, s.Fraction)).ToArray();
+
             RaiseChanged(item);
         });
 
@@ -636,7 +652,7 @@ public sealed class DownloadQueueService : IDisposable
 
         if (item.FilePath is null)
         {
-            var candidatePath = BuildTorrentDestinationPath(item.Title, ResolveDownloadFolder(settings));
+            var candidatePath = BuildTorrentDestinationPath(item.Title, ResolveItemDestinationFolder(item, settings));
             item.FilePath = await ReserveUniqueDestinationPathAsync(item.Id, candidatePath, cancellationToken, isDirectory: true).ConfigureAwait(false);
         }
 
@@ -664,7 +680,8 @@ public sealed class DownloadQueueService : IDisposable
             item.FilePath,
             rateLimitKBps: rateLimitKBps,
             progress: progress,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+            cancellationToken: cancellationToken,
+            extraTrackers: settings.ExtraTorrentTrackers).ConfigureAwait(false);
     }
 
     private void CompleteWaiter(DownloadQueueItem item)
@@ -717,6 +734,19 @@ public sealed class DownloadQueueService : IDisposable
         string.IsNullOrWhiteSpace(settings.DownloadFolder)
             ? SettingsService.GetDefaultDownloadFolder()
             : settings.DownloadFolder;
+
+    /// <summary>
+    /// Where a specific item's download actually lands: its own
+    /// <see cref="DownloadQueueItem.DestinationFolder"/> override if it has one (set once, at enqueue
+    /// time, via <c>Views.AddDownloadDialog</c>'s "Save to" picker), else the app-wide
+    /// <see cref="ResolveDownloadFolder"/> default — the same fallback chain
+    /// <see cref="DownloadQueueItem.DestinationFolder"/>'s own doc comment describes. Used by all
+    /// three <c>Process*ItemAsync</c> methods so a per-item override and "just use what Settings has
+    /// configured" both funnel through one place. Internal (not private) so Yoink.Tests can exercise
+    /// it directly.
+    /// </summary>
+    internal static string ResolveItemDestinationFolder(DownloadQueueItem item, AppSettings settings) =>
+        string.IsNullOrWhiteSpace(item.DestinationFolder) ? ResolveDownloadFolder(settings) : item.DestinationFolder;
 
     private Task<DownloadQueueItem?> GetNextPendingAsync(CancellationToken cancellationToken) =>
         WithLockAsync(async () =>
@@ -967,14 +997,15 @@ public sealed class DownloadQueueService : IDisposable
     /// </summary>
     private readonly record struct ColumnOrdinals(
         int Id, int Url, int Title, int Resolution, int ContainerFormat, int FilePath,
-        int Status, int Progress, int ErrorMessage, int Position, int CreatedAt, int Kind, int InfoJson)
+        int Status, int Progress, int ErrorMessage, int Position, int CreatedAt, int Kind, int InfoJson,
+        int DestinationFolder)
     {
         public static ColumnOrdinals FromReader(SqliteDataReader reader) => new(
             reader.GetOrdinal("Id"), reader.GetOrdinal("Url"), reader.GetOrdinal("Title"),
             reader.GetOrdinal("Resolution"), reader.GetOrdinal("ContainerFormat"), reader.GetOrdinal("FilePath"),
             reader.GetOrdinal("Status"), reader.GetOrdinal("Progress"), reader.GetOrdinal("ErrorMessage"),
             reader.GetOrdinal("Position"), reader.GetOrdinal("CreatedAt"), reader.GetOrdinal("Kind"),
-            reader.GetOrdinal("InfoJson"));
+            reader.GetOrdinal("InfoJson"), reader.GetOrdinal("DestinationFolder"));
     }
 
     private static DownloadQueueItem ReadItem(SqliteDataReader reader) => ReadItem(reader, ColumnOrdinals.FromReader(reader));
@@ -994,7 +1025,8 @@ public sealed class DownloadQueueService : IDisposable
         CreatedAt = DateTimeOffset.Parse(
             reader.GetString(o.CreatedAt), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
         Kind = Enum.Parse<DownloadKind>(reader.GetString(o.Kind)),
-        InfoJson = reader.IsDBNull(o.InfoJson) ? null : reader.GetString(o.InfoJson)
+        InfoJson = reader.IsDBNull(o.InfoJson) ? null : reader.GetString(o.InfoJson),
+        DestinationFolder = reader.IsDBNull(o.DestinationFolder) ? null : reader.GetString(o.DestinationFolder)
     };
 
     /// <summary>
@@ -1039,6 +1071,12 @@ public sealed class DownloadQueueService : IDisposable
         // pre-existing row simply has nothing to reuse, same as a freshly-enqueued item with no
         // title yet.
         EnsureColumnExists("InfoJson", "TEXT");
+
+        // Same reasoning again, added for the per-download destination folder (see
+        // DownloadQueueItem.DestinationFolder's doc comment) — nullable, no default needed: null
+        // already means "use whatever Settings says", which is exactly what every pre-existing row
+        // already did before this column existed.
+        EnsureColumnExists("DestinationFolder", "TEXT");
     }
 
     private void EnsureColumnExists(string columnName, string columnDefinitionSql)

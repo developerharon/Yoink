@@ -1,6 +1,7 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:styling="using:FluentAvalonia.Styling"
+             xmlns:controls="using:Yoink.Controls"
              x:Class="Yoink.App"
              RequestedThemeVariant="Default">
 
@@ -135,6 +136,17 @@
             <Setter Property="Height" Value="10" />
             <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
             <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        </Style>
+
+        <!-- Controls.SegmentedProgressBar — same track/fill pair as the plain ProgressBar above, so
+             it reads as a variant of the same control rather than a visually distinct one; the divider
+             between segments uses the page's own background so it reads as a subtle notch rather than
+             a hard line, and (being AppBackgroundBrush) still shows up against either brush above in
+             both light and dark theme. -->
+        <Style Selector="controls|SegmentedProgressBar">
+            <Setter Property="TrackBrush" Value="{DynamicResource AccentSoftBrush}" />
+            <Setter Property="FillBrush" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="SeparatorBrush" Value="{DynamicResource AppBackgroundBrush}" />
         </Style>
 
         <!-- Views.MainWindow's own hand-drawn min/max/close row (WindowDecorations="None" means

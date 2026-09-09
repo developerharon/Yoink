@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Yoink.Models;
 
@@ -122,6 +124,44 @@ public class AppSettings
     /// timer — see <see cref="Services.DependencyProvisioningService.CheckForManagedUpdatesAsync"/>.
     /// </summary>
     public DateTimeOffset? LastDependencyCheckUtc { get; set; }
+
+    /// <summary>
+    /// Extra tracker URLs <see cref="Services.TorrentEngine"/> announces every torrent to, on top of
+    /// whichever ones the magnet link/<c>.torrent</c> file already came with — added directly in
+    /// response to a real "stuck at Fetching torrent metadata forever" report: a magnet with few or no
+    /// trackers of its own relies entirely on DHT for peer discovery, and a cold DHT routing table
+    /// (nothing bootstrapped yet, most likely on a fresh install or this app's very first torrent) can
+    /// genuinely take longer than <see cref="Services.TorrentEngine.MetadataResolutionTimeout"/> to
+    /// walk far enough to find any peers at all — whereas a tracker answers in one HTTP/UDP round trip,
+    /// typically a few seconds, with no DHT walk needed. This is exactly the fix qBittorrent's own
+    /// "Automatically add these trackers to new downloads" option exists for — the same idea, not a
+    /// novel one. Defaults to <see cref="DefaultExtraTorrentTrackers"/>, a small curated set of
+    /// well-known public trackers; editable/clearable in <c>Views.SettingsView</c> — an empty list
+    /// disables this entirely (every torrent falls back to using only its own trackers/DHT, the
+    /// original behavior). Public tracker uptime drifts over time by nature, so this list is worth
+    /// revisiting occasionally rather than assumed permanently accurate — that's the whole reason it's
+    /// user-editable rather than a hardcoded constant.
+    /// </summary>
+    public List<string> ExtraTorrentTrackers { get; set; } = DefaultExtraTorrentTrackers.ToList();
+
+    /// <summary>
+    /// The default value <see cref="ExtraTorrentTrackers"/> starts from (a fresh install) and what
+    /// <c>Views.SettingsView</c>'s "Reset" button restores — a small, deliberately redundant set (UDP
+    /// and HTTPS both represented, several independent operators) so metadata resolution has several
+    /// independent chances to succeed quickly rather than depending on any one tracker's uptime.
+    /// Public, not just internal, so <c>Views.SettingsView</c> can reference it directly for the Reset
+    /// button without going through <see cref="AppSettings"/> construction.
+    /// </summary>
+    public static readonly IReadOnlyList<string> DefaultExtraTorrentTrackers =
+    [
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://open.tracker.cl:1337/announce",
+        "udp://tracker.openbittorrent.com:6969/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://open.stealth.si:80/announce",
+        "https://tracker.tamersunion.org:443/announce"
+    ];
 }
 
 /// <summary>

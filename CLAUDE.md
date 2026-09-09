@@ -50,12 +50,20 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
   parsing a magnet URI's own `dn=` parameter is plain string/URI parsing); everything else on that
   class talks to the network/a real swarm, so it isn't covered by the automated suite — see
   `TorrentEngine.cs`'s own doc comment for how it was instead verified for real.
+- `Services/DownloadEngineTests` — `PlanSegments`/`GetFileNameFromUri`/content-disposition parsing
+  (pure, no network), plus real segmented-download/resume/rate-limiting behavior against a real local
+  HTTP server (a plain `HttpListener` on loopback, `RangeSupportingTestServer`) rather than a mock —
+  including a real multi-connection download (20MB, above the 5MB-per-segment floor by enough to
+  actually force 4 segments, not just take the segmented code path with one) confirming
+  `DownloadEngineProgress.Segments` genuinely reaches a progress subscriber with the right byte ranges
+  and reads 100% on every segment by the time the download completes.
 - `Services/DownloadQueueScheduleTests` — `DownloadQueueService.IsWithinWindow` (same-day and
   overnight-wrap schedule windows, boundary-inclusive/exclusive edges), `ComputeRateLimitKBps` (every
   combination of per-download/global caps), `BuildFormatSelector`/`BuildDestinationPath`/
   `BuildFileDestinationPath`/`BuildTorrentDestinationPath`/`ResolveDownloadFolder`, `InsertPathSuffix`
   (including its `isDirectory` overload — a torrent directory name containing a genuine dot, e.g.
-  "Ubuntu 24.04", must not have that dot misread as a file extension), and
+  "Ubuntu 24.04", must not have that dot misread as a file extension), `ResolveItemDestinationFolder`
+  (an item's own override wins when set, else falls back to `ResolveDownloadFolder`), and
   `SettingsService.GetDefaultDownloadFolder`/`ParseXdgDownloadDir` (the freedesktop.org
   user-dirs.dirs parsing behind the Linux default-Downloads-folder guess).
 - `Services/DownloadQueueServiceTests` — real `DownloadQueueService` instances against a temp SQLite
@@ -72,7 +80,10 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
   never "within") so the background loop never dequeues anything mid-test, rather than racing it. A
   `DownloadKind.Torrent`-specific test drives `CheckForMissingFilesAsync` against a row updated
   directly (no real swarm available in a test) to `Completed` with a real directory as `FilePath`,
-  confirming it's *not* misflagged `Missing` the way a naive `File.Exists`-only check would.
+  confirming it's *not* misflagged `Missing` the way a naive `File.Exists`-only check would. Another
+  real end-to-end test enqueues one item with a `destinationFolder` override and one without against
+  the same real local HTTP server, confirming the override lands its file in the override folder while
+  a plain item right alongside it still lands in the app-wide default, unaffected.
 - `Services/ClipboardWatcherServiceTests` — the real background poll loop (given a fast poll interval)
   against fake clipboard-read/is-enabled delegates: every recognized YouTube URL/downloadable-file/
   torrent-source shape, negative cases, fires-once-per-change, and respects the enabled/disabled
@@ -128,6 +139,9 @@ window and several service/model classes, so it's organized by role, folder-per-
   yt-dlp wrapper, the queue. No Avalonia UI types belong here.
 - `Yoink/Models/` (namespace `Yoink.Models`) — plain data classes/enums shared across services and views.
 - `Yoink/Converters/` (namespace `Yoink.Converters`) — `IValueConverter` implementations for XAML bindings.
+- `Yoink/Controls/` (namespace `Yoink.Controls`) — custom Avalonia controls with their own hand-written
+  `Render` logic (currently just `SegmentedProgressBar` — see `DownloadEngine.cs`'s own notes above),
+  distinct from `Views/`'s windows/dialogs and from a plain XAML `UserControl`.
 - `Yoink/Program.cs`, `Yoink/App.axaml`/`.axaml.cs`, `Yoink/app.manifest` — stay at the project root
   (namespace `Yoink`); they're bootstrap, not a feature area.
 
@@ -308,6 +322,16 @@ project root — that's exactly the flat structure this reorg moved away from.
     `.torrent` file, by contrast, already has its full contents on hand (or one quick download away)
     with no swarm involved, so it resolves fully here (name, total size, file count) via
     `TorrentEngine.LoadTorrentAsync`, same as the generic-file path.
+  - **"Save to" (per-download folder override)**: a read-only `TextBox` + Browse/Reset row, shown in
+    `PanelOptions` for every kind (not just video — sits below `PanelVideoOptions`, outside it), same
+    idiom as `Views.SettingsView`'s own download-folder row but writing to the private
+    `_destinationFolderOverride` field instead of persisting to `AppSettings` — this choice is for
+    *this* download only. Seeded from `DownloadQueueService.ResolveDownloadFolder(SettingsService.Load())`
+    at the top of every `ResolveAsync` attempt (including a retry after a failed one, so a stale
+    override from a previous attempt never silently carries over to an unrelated item), so the common
+    case — just use the configured default — needs no interaction at all. Stays `null` (meaning "no
+    override, use Settings") unless the user actually browses for something else; passed straight
+    through to `DownloadQueueService.EnqueueAsync`'s `destinationFolder` parameter for all three kinds.
 - `UpdatePromptDialog.axaml` / `.axaml.cs` — the update/distribution story's UI half (see `UpdateService`
   below for the mechanism). Shows the new version + release notes with "Install Update"/"Later" buttons;
   clicking "Install Update" downloads (progress bar, reusing the same pattern as everywhere else) then
@@ -319,7 +343,7 @@ project root — that's exactly the flat structure this reorg moved away from.
 - `SettingsView.axaml` / `.axaml.cs` — the settings screen from README roadmap step 7 ("a settings screen
   to control all of it"), a `UserControl` (not a `Window` — it used to be `SettingsWindow`, opened modally;
   see `MainWindow` above for why that changed) hosted as `MainWindow`'s `SettingsBody`. Content is grouped
-  into `FASettingsExpander`s (Appearance, Auto-catch & background, Downloads, Scheduling), each holding
+  into `FASettingsExpander`s (Appearance, Auto-catch & background, Downloads, Torrents, Scheduling), each holding
   `FASettingsExpanderItem` rows with the control in `.Footer` — FluentAvaloniaUI's own settings-page idiom,
   modeled on Windows' own Settings app, rather than the hand-rolled `DockPanel` label+control rows this
   used before. Covers: Theme; an accent-color picker (five round swatch buttons, `Classes="AccentSwatch"`
@@ -342,7 +366,16 @@ project root — that's exactly the flat structure this reorg moved away from.
   FolderBrowserDialog, same "Avalonia doesn't provide one directly" reasoning as `MessageBoxWindow`) via
   `TopLevel.GetTopLevel(this)`, Reset clears `AppSettings.DownloadFolder` back to `null`. The box is seeded
   from `DownloadQueueService.ResolveDownloadFolder`, not the raw setting, so it always shows the actual
-  folder downloads will land in — the platform default when unset, not a blank field.
+  folder downloads will land in — the platform default when unset, not a blank field. The Torrents
+  group's one row, "Extra trackers" (`AppSettings.ExtraTorrentTrackers` — see that property's and
+  `TorrentEngine.cs`'s own notes for why this exists), is a multi-line `TextBox` (one tracker URL per
+  line) rather than `NumericUpDown`/`ToggleSwitch` like most of this page — `TxtExtraTrackers_TextChanged`
+  splits on newlines and drops blank/whitespace-only lines before saving, so a stray blank line from a
+  paste doesn't reach `TorrentEngine`'s own per-tracker `Uri` parsing as a bogus entry; an empty box
+  saves an empty list, which is exactly how this feature is meant to be turned off. Seeding/resetting
+  the text programmatically (construction, and `BtnResetExtraTrackers_Click`) is guarded by
+  `_suppressExtraTrackersTextChanged` so that assignment doesn't immediately re-trigger the handler and
+  redundantly re-save the same value right back — harmless either way, just pointless churn.
 - `MessageBoxWindow.axaml` / `.axaml.cs` — a minimal modal dialog (title + message + OK button) used in
   place of WinForms' `MessageBox`, which Avalonia doesn't provide out of the box. Use
   `MessageBoxWindow.ShowAsync(owner, message, title)` for anything that genuinely needs a blocking
@@ -363,13 +396,51 @@ project root — that's exactly the flat structure this reorg moved away from.
   `~/.config/user-dirs.dirs` by `ParseXdgDownloadDir`, else the same `~/Downloads` guess) — a relocated or
   localized Downloads folder isn't a given there the way it is on the other two platforms.
 - `DownloadEngine.cs` — the generic core download engine from README roadmap step 1: a source-agnostic,
-  resumable single-file HTTP downloader (range-request resume, progress via `IProgress<double>`,
-  retry-with-backoff, cancellation). It writes to `<destination>.partial` and only moves the file into place
-  on success. **Not currently wired into anything** — YouTube downloads go through `yt-dlp`'s own downloader
-  instead (see below), since reimplementing yt-dlp's segment-download-and-mux behavior on top of this engine
-  would just be redoing what it already does correctly. This class is the foundation for a later roadmap
-  step: plain, non-YouTube direct-link downloads (e.g. the browser-extension/clipboard-watching "auto-catch"
-  step).
+  resumable HTTP downloader everything that isn't YouTube (`DownloadKind.File`, via
+  `DownloadQueueService.ProcessFileItemAsync`) goes through — YouTube downloads still go through
+  `yt-dlp`'s own downloader instead (see below), since reimplementing its segment-download-and-mux
+  behavior on top of this engine would just be redoing what it already does correctly. Writes to
+  `<destination>.partial` and only moves the file into place on success, same invariant `YtDlpClient`'s
+  own downloads already follow.
+  - **Segmented downloads**: when the server both reports a size and honors HTTP Range requests
+    (checked via `ProbeAsync`, a single 1-byte ranged GET rather than HEAD, since not every server
+    implements HEAD), the file splits into up to `maxConnections` concurrent range requests, each
+    writing directly into its own slice of the preallocated `.partial` file via `RandomAccess` —
+    positional I/O, so multiple segment tasks can safely write to different offsets of the same file
+    handle at once with no shared file-pointer race. A `<destination>.partial.segments.json` sidecar
+    records each segment's own start/end/downloaded-so-far, the only way a resumed pause/retry can know
+    how far each individual segment got (checking the partial file's overall length doesn't work once
+    segments write out of order into non-contiguous offsets). Falls back to the original
+    single-connection sequential-append behavior when the server can't do either (no `Content-Length`,
+    or a Range request comes back as a plain 200) — no sidecar file needed for that path.
+  - **Per-segment progress (`DownloadEngineProgress.Segments`)** — added directly in response to real
+    user feedback: the queue view's plain flat progress bar gave no visible sign a "big download" was
+    actually splitting across several connections at once, even though it had been doing exactly that
+    since this class's segmented rewrite. Each `ReportProgress` call inside `DownloadSegmentedAsync`
+    still reports the plain aggregate `Fraction`/`BytesDownloaded`/`TotalBytes` on every single chunk,
+    completely unthrottled, exactly as before this existed — but building the full per-segment snapshot
+    (one small allocation) is throttled to `SegmentSnapshotInterval` (100ms), since that inner callback
+    fires on every buffer read across every concurrently-downloading segment, which on a fast
+    connection can be many times a second. An unconditional final report with every segment at exactly
+    100% fires right before the method returns successfully, so the throttle can never leave the
+    segmented-progress-bar visualization sitting a tick shy of full on whichever segment happened to
+    finish last. `DownloadQueueService.ProcessFileItemAsync`'s progress callback only overwrites
+    `DownloadQueueItem.SegmentProgress` (a `Models.DownloadSegmentInfo` list — a separate Models-layer
+    type rather than reusing this Services one directly, keeping `Yoink.Models` from needing to
+    reference `Yoink.Services`) when `Segments` is actually non-null on a given tick, so a
+    throttled-away tick leaves the queue row's last known snapshot in place instead of blanking it.
+    Rendered by `Controls.SegmentedProgressBar` (see `Yoink/Controls/` below) — one continuous bar, not
+    several separate pill-shaped chunks with gaps, each segment's slot width proportional to its own
+    byte range (segments aren't always equal size — the last one especially often isn't) and filled
+    independently up to its own live fraction, with a thin divider line at each internal boundary.
+    Shown instead of the plain `ProgressBar` via `DownloadQueueItem.ShowSegments`/`ShowPlainProgress`
+    (exact complements of each other) — only for a `DownloadKind.File` row actually split across more
+    than one connection; a single-segment/sequential-fallback file row, and every video/torrent row,
+    still uses the plain bar. Verified for real via a headless render of the actual `Views.MainWindow`
+    queue row with a fake multi-segment item at varying fill levels per segment (see the
+    `headless-visual-verification` project memory for the technique) — confirmed against the actual
+    rendered bitmap, not just XAML compiling, the same standard this file already holds every other
+    layout change to.
 - `YtDlpClient.cs` — the YouTube extraction layer from README roadmap step 2. Shells out to the `yt-dlp`
   CLI — resolved via `UseResolvedPaths` (see `DependencyProvisioningService` below) to either a PATH
   lookup or a Yoink-managed copy, defaulting to a bare PATH lookup until that runs — for everything that
@@ -491,6 +562,27 @@ project root — that's exactly the flat structure this reorg moved away from.
     outbound UDP to work at all), then the same magnet, same environment, threw the expected
     `TimeoutException` at exactly the configured 2-minute mark with the `finally` cleanup completing
     cleanly right after.
+  - **Extra trackers (`AppSettings.ExtraTorrentTrackers`)** — the actual fix for the class of torrent
+    this timeout above can only fail gracefully for, not resolve: a magnet with few/no trackers of its
+    own, relying entirely on a DHT walk that can genuinely take longer than the timeout to find any
+    peers at all, especially cold (nothing bootstrapped yet — a fresh install, or this app's very
+    first torrent). `AddExtraTrackersAsync` registers every configured tracker URL with the newly
+    added `TorrentManager`'s own `TrackerManager.AddTrackerAsync(Uri)` — MonoTorrent's own supported
+    way to do this (confirmed via reflection, same standard as everything else in this class), called
+    right after `_engine.AddAsync` and before `StartAsync`, so they're already registered by the time
+    announcing begins. Best-effort per tracker (a malformed/unreachable URL in the user-edited list
+    doesn't block every other one). This is exactly the same idea qBittorrent's own "Automatically add
+    these trackers to new downloads" option exists for, not a novel one — a tracker answers in one
+    HTTP/UDP round trip (typically a few seconds) with no DHT walk needed at all, so supplementing a
+    tracker-poor magnet with a few reliable, independent public trackers gives metadata resolution
+    several fast, mostly-independent chances to succeed instead of depending entirely on DHT.
+    `AppSettings.DefaultExtraTorrentTrackers` ships a small curated set (UDP and HTTPS both
+    represented, several independent operators); user-editable/clearable in `Views.SettingsView`'s new
+    "Torrents" group (see below) — an empty list falls back to exactly the original DHT-and-the-
+    torrent's-own-trackers-only behavior. **Verified for real, against the exact same magnet link that
+    reproduced the original hang**: metadata that previously never resolved in 100+ seconds now
+    resolved in **5 seconds** once the default extra trackers were supplied — the single most direct
+    evidence available that this is the actual fix, not just a plausible-sounding one.
 - `DependencyProvisioningService.cs` — provisions yt-dlp/ffmpeg for a packaged install so a plain
   "download the AppImage/Setup.exe and run it" user never has to separately install (or keep updating)
   either one themselves, added once this became a real problem: this dev environment genuinely had
@@ -579,6 +671,15 @@ project root — that's exactly the flat structure this reorg moved away from.
     `SettingsService.GetDefaultDownloadFolder()`'s platform-Downloads-folder guess (see that method's doc
     comment). Both are read fresh from `SettingsService.Load()` inside `ProcessItemAsync`, same as the
     speed-limit settings right below it.
+    - **Per-download override**: `EnqueueAsync`'s `destinationFolder` parameter (`Views.AddDownloadDialog`'s
+      "Save to" picker is the only caller that passes a real value) persists onto
+      `DownloadQueueItem.DestinationFolder`, a nullable column added via the same `EnsureColumnExists`
+      migration pattern. All three `Process*ItemAsync` methods call `ResolveItemDestinationFolder(item,
+      settings)` instead of the bare `ResolveDownloadFolder(settings)` now — the item's own override if
+      it has one, else exactly the same app-wide default as before. Set once at enqueue time, like
+      `ContainerFormat`; there's no way to change it after the fact for an already-queued item (retrying
+      a `Failed`/`Canceled`/`Missing` item reuses its already-resolved `FilePath` and never re-consults
+      this anyway, same as it never re-consults the app-wide setting either).
   - **One-on-one relation between a download file and its queue row**: two related pieces, both added
     together. First, **no more silent overwrite of a same-named download**: `BuildDestinationPath`/
     `BuildFileDestinationPath`'s result is no longer used as `item.FilePath` directly — it's a
@@ -699,7 +800,11 @@ project root — that's exactly the flat structure this reorg moved away from.
   `InstalledFfmpegBuildTag`/`LastDependencyCheckUtc` are `DependencyProvisioningService`'s equivalent for
   a managed yt-dlp/ffmpeg copy — not surfaced in `Views.SettingsView` (there's nothing for a user to
   configure here, unlike everything else in this class), just internal bookkeeping so it only
-  re-downloads a managed copy when the upstream build has actually moved on.
+  re-downloads a managed copy when the upstream build has actually moved on. `ExtraTorrentTrackers`
+  (default `DefaultExtraTorrentTrackers`, a small curated public-tracker list) is what
+  `TorrentEngine.DownloadAsync` announces every torrent to on top of its own trackers — see
+  `TorrentEngine.cs`'s own notes above for why this exists and how it was verified to actually fix the
+  real "stuck at Fetching torrent metadata forever" bug it was added for.
 - `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus` + `DownloadKind`. Plain data, no
   `INotifyPropertyChanged` — see the `Views.MainWindow`/`DownloadQueueService` notes above for how the
   queue view stays live without it. Carries presentational computed properties
@@ -725,7 +830,14 @@ project root — that's exactly the flat structure this reorg moved away from.
   never-persisted reasoning as `DownloadedBytes`/`TotalBytes`) driving `ShowPeers`/`PeersText` and
   `ShowPhase` in the queue row — `PhaseText` ("Fetching torrent metadata…", "Checking existing
   files…") and `ShowSize`/`ShowPeers` are mutually exclusive (all three bind to the same spot in the
-  row) so a torrent never shows two overlapping captions during the same tick.
+  row) so a torrent never shows two overlapping captions during the same tick. `DestinationFolder`
+  (nullable, set once at enqueue time via `Views.AddDownloadDialog`'s "Save to" picker) is this one
+  download's folder override — null means "use whatever `AppSettings.DownloadFolder`/Settings resolves
+  to", same as every row before this existed; see `DownloadQueueService.ResolveItemDestinationFolder`
+  for exactly how the two combine. `SegmentProgress` (`File`-only, live-only, a `DownloadSegmentInfo`
+  list) drives `ShowSegments`/`Controls.SegmentedProgressBar` — see `DownloadEngine.cs`'s own notes
+  above for the full mechanism; `ShowPlainProgress` is its exact complement, so exactly one of the
+  plain `ProgressBar` or the segmented one ever shows for a given row.
 
 ### Converters (`Yoink/Converters/`)
 

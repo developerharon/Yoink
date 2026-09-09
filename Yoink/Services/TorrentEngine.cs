@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using MonoTorrent;
 using MonoTorrent.Client;
+using MonoTorrent.Trackers;
 
 namespace Yoink.Services;
 
@@ -201,13 +203,21 @@ public sealed class TorrentEngine : IDisposable
     /// Yoink.Tests can exercise the timeout path deterministically and quickly, the same reason
     /// <c>YtDlpClient.DownloadAsync</c>'s own <c>stallTimeout</c> parameter exists.
     /// </param>
+    /// <param name="extraTrackers">
+    /// Extra tracker URLs to announce to, on top of whatever <paramref name="source"/> already came
+    /// with — see <c>AppSettings.ExtraTorrentTrackers</c>'s own doc comment for why this exists at
+    /// all (a magnet with few/no trackers of its own leans entirely on DHT, which can be slow to
+    /// bootstrap cold). Applied via <see cref="AddExtraTrackersAsync"/> before <c>StartAsync</c> so
+    /// they're already registered by the time announcing begins.
+    /// </param>
     public async Task DownloadAsync(
         string source,
         string saveDirectory,
         int? rateLimitKBps,
         IProgress<TorrentDownloadProgress>? progress,
         CancellationToken cancellationToken,
-        TimeSpan? metadataResolutionTimeout = null)
+        TimeSpan? metadataResolutionTimeout = null,
+        IReadOnlyList<string>? extraTrackers = null)
     {
         Directory.CreateDirectory(saveDirectory);
 
@@ -220,6 +230,9 @@ public sealed class TorrentEngine : IDisposable
         var manager = DownloadUrlKind.IsMagnetLink(source)
             ? await _engine.AddAsync(MagnetLink.Parse(source), saveDirectory, torrentSettings).ConfigureAwait(false)
             : await _engine.AddAsync(await LoadTorrentAsync(source, _httpClient, cancellationToken).ConfigureAwait(false), saveDirectory, torrentSettings).ConfigureAwait(false);
+
+        if (extraTrackers is { Count: > 0 })
+            await AddExtraTrackersAsync(manager, extraTrackers).ConfigureAwait(false);
 
         var completedNaturally = false;
         try
@@ -272,6 +285,30 @@ public sealed class TorrentEngine : IDisposable
             catch
             {
                 // See above.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Registers every extra tracker URL with <paramref name="manager"/>'s own
+    /// <see cref="TorrentManager.TrackerManager"/> — <see cref="ITrackerManager.AddTrackerAsync(Uri)"/>
+    /// is MonoTorrent's own supported way to do this, confirmed via reflection against the installed
+    /// package the same "confirmed, not assumed" way everything else in this class was. Best-effort
+    /// per tracker: a single malformed/unreachable URL in the configured list (user-edited free text —
+    /// see <c>AppSettings.ExtraTorrentTrackers</c>) shouldn't prevent every other configured tracker,
+    /// or the torrent's own, from being tried.
+    /// </summary>
+    private static async Task AddExtraTrackersAsync(TorrentManager manager, IReadOnlyList<string> extraTrackers)
+    {
+        foreach (var trackerUrl in extraTrackers)
+        {
+            try
+            {
+                await manager.TrackerManager.AddTrackerAsync(new Uri(trackerUrl)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort — see this method's own doc comment.
             }
         }
     }
