@@ -1,8 +1,8 @@
 # Yoink
 
-Grab a video, keep watching. Yoink is a free, source-available download manager — it started as a YouTube
-downloader and now handles general direct-link file downloads and torrents too, built to feel like a real
-desktop app on Linux rather than an afterthought next to Windows.
+Yoink is a free, source-available download manager — YouTube videos, torrents, and any other direct-link
+file, all in one queue. Built to feel like a real desktop app on Linux rather than an afterthought next to
+Windows.
 
 It's a hobby project, built purely because making it was fun — see [License](#license) below for what that
 means for how you can use it.
