@@ -101,6 +101,21 @@
                 </ui:FASettingsExpanderItem>
             </ui:FASettingsExpander>
 
+            <ui:FASettingsExpander Header="Torrents" IconSource="Globe" IsExpanded="True">
+                <ui:FASettingsExpanderItem Content="Extra trackers"
+                                            Description="Announced to every torrent alongside whatever trackers it already came with — helps a magnet link with few or none of its own find peers faster than DHT alone can. One URL per line; clear the box to turn this off entirely.">
+                    <ui:FASettingsExpanderItem.Footer>
+                        <StackPanel Spacing="8">
+                            <TextBox Name="TxtExtraTrackers" Width="320" Height="110"
+                                     AcceptsReturn="True" TextWrapping="NoWrap" VerticalContentAlignment="Top"
+                                     TextChanged="TxtExtraTrackers_TextChanged" />
+                            <Button Name="BtnResetExtraTrackers" Content="Reset to defaults"
+                                    HorizontalAlignment="Right" Click="BtnResetExtraTrackers_Click" />
+                        </StackPanel>
+                    </ui:FASettingsExpanderItem.Footer>
+                </ui:FASettingsExpanderItem>
+            </ui:FASettingsExpander>
+
             <ui:FASettingsExpander Header="Scheduling" IconSource="Calendar" IsExpanded="True">
                 <ui:FASettingsExpanderItem Content="Only download during these hours">
                     <ui:FASettingsExpanderItem.Footer>

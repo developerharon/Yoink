@@ -680,7 +680,8 @@ public sealed class DownloadQueueService : IDisposable
             item.FilePath,
             rateLimitKBps: rateLimitKBps,
             progress: progress,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+            cancellationToken: cancellationToken,
+            extraTrackers: settings.ExtraTorrentTrackers).ConfigureAwait(false);
     }
 
     private void CompleteWaiter(DownloadQueueItem item)

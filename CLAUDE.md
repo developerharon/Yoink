@@ -343,7 +343,7 @@ project root — that's exactly the flat structure this reorg moved away from.
 - `SettingsView.axaml` / `.axaml.cs` — the settings screen from README roadmap step 7 ("a settings screen
   to control all of it"), a `UserControl` (not a `Window` — it used to be `SettingsWindow`, opened modally;
   see `MainWindow` above for why that changed) hosted as `MainWindow`'s `SettingsBody`. Content is grouped
-  into `FASettingsExpander`s (Appearance, Auto-catch & background, Downloads, Scheduling), each holding
+  into `FASettingsExpander`s (Appearance, Auto-catch & background, Downloads, Torrents, Scheduling), each holding
   `FASettingsExpanderItem` rows with the control in `.Footer` — FluentAvaloniaUI's own settings-page idiom,
   modeled on Windows' own Settings app, rather than the hand-rolled `DockPanel` label+control rows this
   used before. Covers: Theme; an accent-color picker (five round swatch buttons, `Classes="AccentSwatch"`
@@ -366,7 +366,16 @@ project root — that's exactly the flat structure this reorg moved away from.
   FolderBrowserDialog, same "Avalonia doesn't provide one directly" reasoning as `MessageBoxWindow`) via
   `TopLevel.GetTopLevel(this)`, Reset clears `AppSettings.DownloadFolder` back to `null`. The box is seeded
   from `DownloadQueueService.ResolveDownloadFolder`, not the raw setting, so it always shows the actual
-  folder downloads will land in — the platform default when unset, not a blank field.
+  folder downloads will land in — the platform default when unset, not a blank field. The Torrents
+  group's one row, "Extra trackers" (`AppSettings.ExtraTorrentTrackers` — see that property's and
+  `TorrentEngine.cs`'s own notes for why this exists), is a multi-line `TextBox` (one tracker URL per
+  line) rather than `NumericUpDown`/`ToggleSwitch` like most of this page — `TxtExtraTrackers_TextChanged`
+  splits on newlines and drops blank/whitespace-only lines before saving, so a stray blank line from a
+  paste doesn't reach `TorrentEngine`'s own per-tracker `Uri` parsing as a bogus entry; an empty box
+  saves an empty list, which is exactly how this feature is meant to be turned off. Seeding/resetting
+  the text programmatically (construction, and `BtnResetExtraTrackers_Click`) is guarded by
+  `_suppressExtraTrackersTextChanged` so that assignment doesn't immediately re-trigger the handler and
+  redundantly re-save the same value right back — harmless either way, just pointless churn.
 - `MessageBoxWindow.axaml` / `.axaml.cs` — a minimal modal dialog (title + message + OK button) used in
   place of WinForms' `MessageBox`, which Avalonia doesn't provide out of the box. Use
   `MessageBoxWindow.ShowAsync(owner, message, title)` for anything that genuinely needs a blocking
@@ -553,6 +562,27 @@ project root — that's exactly the flat structure this reorg moved away from.
     outbound UDP to work at all), then the same magnet, same environment, threw the expected
     `TimeoutException` at exactly the configured 2-minute mark with the `finally` cleanup completing
     cleanly right after.
+  - **Extra trackers (`AppSettings.ExtraTorrentTrackers`)** — the actual fix for the class of torrent
+    this timeout above can only fail gracefully for, not resolve: a magnet with few/no trackers of its
+    own, relying entirely on a DHT walk that can genuinely take longer than the timeout to find any
+    peers at all, especially cold (nothing bootstrapped yet — a fresh install, or this app's very
+    first torrent). `AddExtraTrackersAsync` registers every configured tracker URL with the newly
+    added `TorrentManager`'s own `TrackerManager.AddTrackerAsync(Uri)` — MonoTorrent's own supported
+    way to do this (confirmed via reflection, same standard as everything else in this class), called
+    right after `_engine.AddAsync` and before `StartAsync`, so they're already registered by the time
+    announcing begins. Best-effort per tracker (a malformed/unreachable URL in the user-edited list
+    doesn't block every other one). This is exactly the same idea qBittorrent's own "Automatically add
+    these trackers to new downloads" option exists for, not a novel one — a tracker answers in one
+    HTTP/UDP round trip (typically a few seconds) with no DHT walk needed at all, so supplementing a
+    tracker-poor magnet with a few reliable, independent public trackers gives metadata resolution
+    several fast, mostly-independent chances to succeed instead of depending entirely on DHT.
+    `AppSettings.DefaultExtraTorrentTrackers` ships a small curated set (UDP and HTTPS both
+    represented, several independent operators); user-editable/clearable in `Views.SettingsView`'s new
+    "Torrents" group (see below) — an empty list falls back to exactly the original DHT-and-the-
+    torrent's-own-trackers-only behavior. **Verified for real, against the exact same magnet link that
+    reproduced the original hang**: metadata that previously never resolved in 100+ seconds now
+    resolved in **5 seconds** once the default extra trackers were supplied — the single most direct
+    evidence available that this is the actual fix, not just a plausible-sounding one.
 - `DependencyProvisioningService.cs` — provisions yt-dlp/ffmpeg for a packaged install so a plain
   "download the AppImage/Setup.exe and run it" user never has to separately install (or keep updating)
   either one themselves, added once this became a real problem: this dev environment genuinely had
@@ -770,7 +800,11 @@ project root — that's exactly the flat structure this reorg moved away from.
   `InstalledFfmpegBuildTag`/`LastDependencyCheckUtc` are `DependencyProvisioningService`'s equivalent for
   a managed yt-dlp/ffmpeg copy — not surfaced in `Views.SettingsView` (there's nothing for a user to
   configure here, unlike everything else in this class), just internal bookkeeping so it only
-  re-downloads a managed copy when the upstream build has actually moved on.
+  re-downloads a managed copy when the upstream build has actually moved on. `ExtraTorrentTrackers`
+  (default `DefaultExtraTorrentTrackers`, a small curated public-tracker list) is what
+  `TorrentEngine.DownloadAsync` announces every torrent to on top of its own trackers — see
+  `TorrentEngine.cs`'s own notes above for why this exists and how it was verified to actually fix the
+  real "stuck at Fetching torrent metadata forever" bug it was added for.
 - `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus` + `DownloadKind`. Plain data, no
   `INotifyPropertyChanged` — see the `Views.MainWindow`/`DownloadQueueService` notes above for how the
   queue view stays live without it. Carries presentational computed properties
