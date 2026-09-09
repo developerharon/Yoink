@@ -327,6 +327,18 @@ public sealed class DownloadQueueService : IDisposable
     {
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Cheap (a File.Exists stat() call per Completed row) and unconditional every
+            // iteration — see CheckForMissingFilesAsync's own doc comment for why that's fine even
+            // for a queue that's never pruned.
+            try
+            {
+                await CheckForMissingFilesAsync(stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
             var settings = SettingsService.Load();
             var capacity = Math.Max(1, settings.MaxConcurrentDownloads) - _activeCancellations.Count;
 
@@ -496,7 +508,11 @@ public sealed class DownloadQueueService : IDisposable
             ? infoJson
             : null;
 
-        item.FilePath ??= BuildDestinationPath(item.Title, ResolveDownloadFolder(settings), item.ContainerFormat);
+        if (item.FilePath is null)
+        {
+            var candidatePath = BuildDestinationPath(item.Title, ResolveDownloadFolder(settings), item.ContainerFormat);
+            item.FilePath = await ReserveUniqueDestinationPathAsync(item.Id, candidatePath, cancellationToken).ConfigureAwait(false);
+        }
 
         var selector = BuildFormatSelector(item.Resolution);
         var progress = new Progress<YtDlpDownloadProgress>(p =>
@@ -537,7 +553,11 @@ public sealed class DownloadQueueService : IDisposable
             item.Title = probe.FileName ?? DownloadEngine.GetFileNameFromUri(sourceUri);
         }
 
-        item.FilePath ??= BuildFileDestinationPath(item.Title, ResolveDownloadFolder(settings));
+        if (item.FilePath is null)
+        {
+            var candidatePath = BuildFileDestinationPath(item.Title, ResolveDownloadFolder(settings));
+            item.FilePath = await ReserveUniqueDestinationPathAsync(item.Id, candidatePath, cancellationToken).ConfigureAwait(false);
+        }
 
         var progress = new Progress<DownloadEngineProgress>(p =>
         {
@@ -604,6 +624,142 @@ public sealed class DownloadQueueService : IDisposable
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadItem(reader) : null;
         }, cancellationToken);
+
+    /// <summary>
+    /// The other half of "one-on-one relation between a download file and the download list": every
+    /// <see cref="DownloadQueueStatus.Completed"/> row's <see cref="DownloadQueueItem.FilePath"/> is
+    /// checked for existence, and any that's gone — deleted, or moved elsewhere on disk; this app has
+    /// no way to tell those two apart, and doesn't need to — is moved to
+    /// <see cref="DownloadQueueStatus.Missing"/> instead of going on showing "Completed" for a file
+    /// that's no longer actually there. <see cref="File.Exists"/> is a cheap stat() call, so scanning
+    /// even a few hundred completed rows (this queue is deliberately never pruned — see the class doc
+    /// comment) every <see cref="ProcessLoopAsync"/> iteration isn't worth a dedicated timer/throttle.
+    ///
+    /// One-way: a row already <see cref="DownloadQueueStatus.Missing"/> is left alone here regardless
+    /// of what's on disk now — <see cref="RetryAsync"/> (the same button
+    /// <see cref="DownloadQueueStatus.Failed"/>/<see cref="DownloadQueueStatus.Canceled"/> already
+    /// show, since <see cref="DownloadQueueItem.CanRetry"/> covers all three) is what brings it back,
+    /// re-downloading to this exact same <see cref="DownloadQueueItem.FilePath"/> — see
+    /// <see cref="ReserveUniqueDestinationPathAsync"/>'s doc comment for why a retry never picks a new
+    /// path.
+    ///
+    /// Internal (not private) so Yoink.Tests can trigger a scan deterministically instead of waiting
+    /// out <see cref="ProcessLoopAsync"/>'s own real-time cadence.
+    /// </summary>
+    internal async Task CheckForMissingFilesAsync(CancellationToken cancellationToken = default)
+    {
+        var missingIds = await WithLockAsync(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT Id, FilePath FROM download_queue WHERE Status = $status AND FilePath IS NOT NULL";
+            command.Parameters.AddWithValue("$status", DownloadQueueStatus.Completed.ToString());
+
+            var missing = new List<long>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!File.Exists(reader.GetString(1)))
+                    missing.Add(reader.GetInt64(0));
+            }
+
+            return missing;
+        }, cancellationToken).ConfigureAwait(false);
+
+        foreach (var id in missingIds)
+            await MarkMissingAsync(id, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task MarkMissingAsync(long id, CancellationToken cancellationToken)
+    {
+        var item = await WithLockAsync(async () =>
+        {
+            await using (var command = _connection.CreateCommand())
+            {
+                command.CommandText = "UPDATE download_queue SET Status = $status, ErrorMessage = $errorMessage WHERE Id = $id";
+                command.Parameters.AddWithValue("$status", DownloadQueueStatus.Missing.ToString());
+                command.Parameters.AddWithValue("$errorMessage", "File no longer found on disk.");
+                command.Parameters.AddWithValue("$id", id);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return await GetItemNoLockAsync(id, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (item is not null)
+            RaiseChanged(item);
+    }
+
+    /// <summary>
+    /// Picks a destination path nothing else already has — the other building block behind
+    /// "one-on-one relation between a download file and the download list": <paramref name="candidatePath"/>
+    /// as-is if it's free, else "name (1).ext", "name (2).ext", ... (the same convention browsers and
+    /// OS file managers already use for a duplicate download) until one is. "Already has" means either
+    /// a file that already exists at that exact path on disk (protects a pre-existing, unrelated file
+    /// the user already had in their download folder too, not just Yoink's own downloads) or another
+    /// row in <c>download_queue</c> already recorded against that same path.
+    ///
+    /// Both the check and the reservation (persisting the chosen path immediately, before any bytes
+    /// are actually written) happen inside one <see cref="WithLockAsync{T}"/> acquisition so two items
+    /// dequeued concurrently (<see cref="AppSettings.MaxConcurrentDownloads"/> &gt; 1) that both
+    /// resolve to the same title can't both land on "name.ext" — the second one's check sees the
+    /// first's reservation the moment it queries, not only once the first's file actually exists on
+    /// disk (which wouldn't happen until well after this method returns).
+    ///
+    /// Only ever called for an item whose <see cref="DownloadQueueItem.FilePath"/> is still null —
+    /// see <see cref="ProcessVideoItemAsync"/>/<see cref="ProcessFileItemAsync"/>. A retried
+    /// <see cref="DownloadQueueStatus.Failed"/>/<see cref="DownloadQueueStatus.Canceled"/>/
+    /// <see cref="DownloadQueueStatus.Missing"/> item already has one from its first attempt and
+    /// deliberately reuses it as-is instead of coming back through here, so retrying re-downloads to
+    /// the exact same place rather than picking up a new "(1)" suffix.
+    /// </summary>
+    private Task<string> ReserveUniqueDestinationPathAsync(long itemId, string candidatePath, CancellationToken cancellationToken) =>
+        WithLockAsync(async () =>
+        {
+            var claimed = new HashSet<string>(StringComparer.Ordinal);
+            await using (var command = _connection.CreateCommand())
+            {
+                command.CommandText = "SELECT FilePath FROM download_queue WHERE FilePath IS NOT NULL AND Id != $id";
+                command.Parameters.AddWithValue("$id", itemId);
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    claimed.Add(reader.GetString(0));
+            }
+
+            var suffix = 0;
+            var chosen = candidatePath;
+            while (claimed.Contains(chosen) || File.Exists(chosen))
+            {
+                suffix++;
+                chosen = InsertPathSuffix(candidatePath, suffix);
+            }
+
+            await using (var command = _connection.CreateCommand())
+            {
+                command.CommandText = "UPDATE download_queue SET FilePath = $filePath WHERE Id = $id";
+                command.Parameters.AddWithValue("$filePath", chosen);
+                command.Parameters.AddWithValue("$id", itemId);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return chosen;
+        }, cancellationToken);
+
+    /// <summary>
+    /// "/dir/Title.mp4" + 1 → "/dir/Title (1).mp4" — the browser/OS-file-manager convention for
+    /// disambiguating a duplicate filename, applied by <see cref="ReserveUniqueDestinationPathAsync"/>.
+    /// <paramref name="suffix"/> of 0 (or less) returns <paramref name="path"/> unchanged. Internal
+    /// (not private) so Yoink.Tests can exercise it directly.
+    /// </summary>
+    internal static string InsertPathSuffix(string path, int suffix)
+    {
+        if (suffix <= 0)
+            return path;
+
+        var directory = Path.GetDirectoryName(path) ?? string.Empty;
+        var stem = Path.GetFileNameWithoutExtension(path);
+        var extension = Path.GetExtension(path);
+        return Path.Combine(directory, $"{stem} ({suffix}){extension}");
+    }
 
     private async Task UpdateStatusAsync(
         long id,

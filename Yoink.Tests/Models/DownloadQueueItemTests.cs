@@ -28,6 +28,7 @@ public class DownloadQueueItemTests
     [InlineData(DownloadQueueStatus.Completed, false, false, false, false, true, true, false)]
     [InlineData(DownloadQueueStatus.Failed, false, false, false, true, false, true, false)]
     [InlineData(DownloadQueueStatus.Canceled, false, false, false, true, false, true, false)]
+    [InlineData(DownloadQueueStatus.Missing, false, false, false, true, false, true, false)]
     public void ActionVisibility_MatchesExactlyOneStateMachine(
         DownloadQueueStatus status,
         bool canPause,
@@ -71,6 +72,7 @@ public class DownloadQueueItemTests
     {
         Assert.Equal("Completed", Make(DownloadQueueStatus.Completed).StatusText);
         Assert.Equal("Failed", Make(DownloadQueueStatus.Failed).StatusText);
+        Assert.Equal("Missing", Make(DownloadQueueStatus.Missing).StatusText);
     }
 
     [Fact]
@@ -98,6 +100,18 @@ public class DownloadQueueItemTests
 
         Assert.Contains("1080p", item.Subtitle);
         Assert.Contains("2026", item.Subtitle);
+    }
+
+    [Fact]
+    public void Subtitle_ShowsErrorMessage_WhenMissingWithOne()
+    {
+        // Missing reuses the same "show the error message instead of the date" Subtitle behavior
+        // Failed already had — see DownloadQueueService.MarkMissingAsync for where this message
+        // actually comes from in production.
+        var item = Make(DownloadQueueStatus.Missing, errorMessage: "File no longer found on disk.");
+
+        Assert.Contains("File no longer found on disk.", item.Subtitle);
+        Assert.StartsWith("1080p", item.Subtitle);
     }
 
     [Fact]

@@ -211,6 +211,39 @@ public class BuildHelpersTests
 
         Assert.Equal(configured, resolved);
     }
+
+    [Fact]
+    public void InsertPathSuffix_ReturnsPathUnchanged_ForSuffixZeroOrLess()
+    {
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Title.mp4");
+
+        Assert.Equal(path, DownloadQueueService.InsertPathSuffix(path, 0));
+        Assert.Equal(path, DownloadQueueService.InsertPathSuffix(path, -1));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void InsertPathSuffix_InsertsNumberBeforeExtension(int suffix)
+    {
+        var folder = System.IO.Path.GetTempPath();
+        var path = System.IO.Path.Combine(folder, "Title.mp4");
+
+        var result = DownloadQueueService.InsertPathSuffix(path, suffix);
+
+        Assert.Equal(System.IO.Path.Combine(folder, $"Title ({suffix}).mp4"), result);
+    }
+
+    [Fact]
+    public void InsertPathSuffix_KeepsTheDirectory()
+    {
+        var folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SomeDownloadFolder");
+        var path = System.IO.Path.Combine(folder, "Report.pdf");
+
+        var result = DownloadQueueService.InsertPathSuffix(path, 1);
+
+        Assert.Equal(folder, System.IO.Path.GetDirectoryName(result));
+    }
 }
 
 /// <summary>SettingsService.GetDefaultDownloadFolder/ParseXdgDownloadDir — the platform-Downloads-folder

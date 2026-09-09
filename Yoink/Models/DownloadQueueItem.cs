@@ -3,9 +3,9 @@ using System;
 namespace Yoink.Models;
 
 /// <summary>
-/// Where a queued download currently stands. <see cref="Completed"/>, <see cref="Failed"/> and
-/// <see cref="Canceled"/> are terminal; <see cref="Paused"/> is not — a paused item goes back to
-/// <see cref="Pending"/> (and eventually gets picked up again) via
+/// Where a queued download currently stands. <see cref="Completed"/>, <see cref="Failed"/>,
+/// <see cref="Canceled"/> and <see cref="Missing"/> are terminal; <see cref="Paused"/> is not — a
+/// paused item goes back to <see cref="Pending"/> (and eventually gets picked up again) via
 /// <see cref="Services.DownloadQueueService.ResumeAsync"/>.
 /// </summary>
 public enum DownloadQueueStatus
@@ -15,7 +15,22 @@ public enum DownloadQueueStatus
     Paused,
     Completed,
     Failed,
-    Canceled
+    Canceled,
+
+    /// <summary>
+    /// A one-way transition from <see cref="Completed"/>: <see cref="Services.DownloadQueueService"/>'s
+    /// background loop periodically checks every completed row's <see cref="DownloadQueueItem.FilePath"/>
+    /// still exists, and moves it here the moment it doesn't (deleted, or moved elsewhere on disk —
+    /// same observable effect either way, since this app has no way to tell the two apart). Behaves
+    /// like <see cref="Failed"/>/<see cref="Canceled"/> for retry purposes (see
+    /// <see cref="DownloadQueueItem.CanRetry"/>) — re-downloading to the exact same
+    /// <see cref="DownloadQueueItem.FilePath"/> if the source URL is still valid — but is a distinct
+    /// status rather than reusing <see cref="Failed"/> so the queue view can tell "this download
+    /// itself never worked" apart from "this one worked, and something happened to the file
+    /// afterwards" (see <c>Converters.DownloadQueueStatusToTextDecorationsConverter</c>'s strikethrough
+    /// and this app's <c>WarningBrush</c>, rather than <c>ErrorBrush</c>, in the queue view).
+    /// </summary>
+    Missing
 }
 
 /// <summary>
@@ -114,7 +129,7 @@ public sealed class DownloadQueueItem
     /// <summary>"1080p" for a video row, "File" for a generic one — <see cref="Resolution"/> has no meaning there.</summary>
     private string KindLabel => Kind == DownloadKind.Video ? $"{Resolution}p" : "File";
 
-    public string Subtitle => Status == DownloadQueueStatus.Failed && !string.IsNullOrEmpty(ErrorMessage)
+    public string Subtitle => Status is DownloadQueueStatus.Failed or DownloadQueueStatus.Missing && !string.IsNullOrEmpty(ErrorMessage)
         ? $"{KindLabel}  •  {ErrorMessage}"
         : $"{KindLabel}  •  {CreatedAt.ToLocalTime():MMM d, yyyy • h:mm tt}";
 
@@ -152,7 +167,7 @@ public sealed class DownloadQueueItem
     public bool CanPause => Status == DownloadQueueStatus.Active;
     public bool CanResume => Status == DownloadQueueStatus.Paused;
     public bool CanCancel => Status is DownloadQueueStatus.Pending or DownloadQueueStatus.Active or DownloadQueueStatus.Paused;
-    public bool CanRetry => Status is DownloadQueueStatus.Failed or DownloadQueueStatus.Canceled;
+    public bool CanRetry => Status is DownloadQueueStatus.Failed or DownloadQueueStatus.Canceled or DownloadQueueStatus.Missing;
     public bool CanShowInFolder => Status == DownloadQueueStatus.Completed;
 
     /// <summary>

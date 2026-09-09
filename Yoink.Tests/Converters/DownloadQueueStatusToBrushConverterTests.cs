@@ -32,6 +32,13 @@ public class DownloadQueueStatusToBrushConverterTests
         Assert.Equal(expected, Convert(status));
     }
 
+    [AvaloniaFact]
+    public void Missing_UsesWarningBrush()
+    {
+        Application.Current!.TryGetResource("WarningBrush", Application.Current.ActualThemeVariant, out var expected);
+        Assert.Equal(expected, Convert(DownloadQueueStatus.Missing));
+    }
+
     [AvaloniaTheory]
     [InlineData(DownloadQueueStatus.Pending)]
     [InlineData(DownloadQueueStatus.Active)]
