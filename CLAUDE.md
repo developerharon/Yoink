@@ -12,9 +12,10 @@ needed, without deferring changes to a numbered future release.
 README.md no longer carries a numbered roadmap (removed deliberately for a cleaner, user-facing doc — see
 its "What it is"/"Features" sections for the current pitch instead). This file's "roadmap step N" phrasing
 below is purely internal shorthand for the fixed sequence the app was actually built in — steps 1-7 are
-done and in use; step 8 (packaging for Ubuntu, then Windows/macOS) and the browser-extension half of
-step 5's auto-catch mechanism are the two pieces still open. There's no other numbered plan to keep in sync
-with it.
+done and in use; step 8's Ubuntu piece is also done now (a `.deb`, replacing the earlier AppImage — see
+`packaging/deb/` and `GitHubReleaseUpdateChecker` below), with Windows/macOS packaging still open. The
+browser-extension half of step 5's auto-catch mechanism may also be done by the time you're reading this —
+see whether `chrome-extension/` exists. There's no other numbered plan to keep in sync with it.
 
 ## Build & run
 
@@ -98,6 +99,11 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
   JSON (no process spawned), `ExtractErrorSummary`, and `TryParseProgressPercent` (pulled out of
   `DownloadAsync`'s stdout loop, which now calls this rather than duplicating the regex match, so the
   tested code path is the real one).
+- `Services/GitHubReleaseUpdateCheckerTests` — just `ParseVersion` (the one pure/isolable piece, same
+  reasoning as `DependencyProvisioningServiceTests` above); `CheckForUpdateAsync` itself talks to the
+  real GitHub Releases API, so it isn't covered by the automated suite — it was instead verified for
+  real, once, in the session that added it: a genuine call against this repo's own real `v0.1.0`
+  release correctly reported an update available.
 - `Converters/DownloadQueueStatusToBrushConverterTests` — via `[AvaloniaFact]`/`[AvaloniaTheory]` (see
   `TestAppBuilder.cs`), against the real `App` and its actual `App.axaml` resources.
 - `Branding/AppTests.cs` — `App.ToThemeVariant`'s mapping, and `App.ApplyAccent`'s actual effect on
@@ -339,7 +345,17 @@ project root — that's exactly the flat structure this reorg moved away from.
   nothing in the click handler after that call ever runs. Shown via `MainWindow.CheckForUpdatesAsync`,
   throttled to roughly once a day via `AppSettings.LastUpdateCheckUtc`; per the agreed update UX (see the
   project memory this came from), this is the *only* place an update is ever downloaded or applied — the
-  check itself is silent, but installing always needs this explicit prompt first.
+  check itself is silent, but installing always needs this explicit prompt first. Windows/macOS only
+  now — see `LinuxUpdatePromptDialog` just below for Linux's own equivalent.
+- `LinuxUpdatePromptDialog.axaml` / `.axaml.cs` — Linux's own update prompt, a small focused sibling
+  of `UpdatePromptDialog` rather than a branch inside it (that dialog's click handler assumes
+  Velopack's download-then-`ApplyUpdatesAndRestart` flow, which doesn't apply to a `.deb` install at
+  all). Shown when `GitHubReleaseUpdateChecker` (see `Services/` below) finds a newer release; its one
+  action, "Open Release Page", just launches the browser to it (`Process.Start` with
+  `UseShellExecute = true`) — no download/progress UI, since installing a `.deb` needs root and isn't
+  something this app does for you. `MainWindow.CheckForUpdatesAsync` branches on
+  `OperatingSystem.IsLinux()` to show this instead of `UpdatePromptDialog`, reusing the same
+  `AppSettings.LastUpdateCheckUtc` once-a-day throttle either way.
 - `SettingsView.axaml` / `.axaml.cs` — the settings screen from README roadmap step 7 ("a settings screen
   to control all of it"), a `UserControl` (not a `Window` — it used to be `SettingsWindow`, opened modally;
   see `MainWindow` above for why that changed) hosted as `MainWindow`'s `SettingsBody`. Content is grouped
@@ -775,7 +791,24 @@ project root — that's exactly the flat structure this reorg moved away from.
   exactly why that call is the literal first line of `Program.Main` (see below), before Avalonia even
   starts — every other line in this codebase, including this service's own constructor, depends on that
   ordering. Best-effort throughout (see `CheckForUpdatesAsync`'s doc comment) — like `NotificationService`,
-  a failed check is never worth surfacing as an error.
+  a failed check is never worth surfacing as an error. Windows/macOS only now that Linux ships a `.deb`
+  instead of a Velopack-packaged AppImage — a `.deb`-installed binary has no Velopack install context
+  either, so `IsInstalled` is false there too, same as a dev build; see `GitHubReleaseUpdateChecker`
+  just below for Linux's own replacement.
+- `GitHubReleaseUpdateChecker.cs` — Linux's own update check, added once the Linux release stopped
+  going through Velopack at all (see "Key dependency: Velopack" below and `packaging/deb/`). Hits this
+  repo's own GitHub Releases API (`.../releases/latest`) directly, parses the tag's version via a
+  plain `System.Version` comparison (`internal static Version? ParseVersion` strips a leading `v`/`V`
+  and any `-prerelease` suffix — this repo's own tags are plain `vX.Y.Z`, so no semver library is
+  needed), and compares against the *running* assembly's own version
+  (`Assembly.GetEntryAssembly().GetName().Version`) rather than any Velopack bookkeeping. That only
+  reads real data because `release.yml`'s Linux publish step passes `-p:Version=<tag>` — without it,
+  MSBuild's unset-`Version` default (`1.0.0.0`) would make every real release look older than what's
+  already "installed" and no update would ever be reported. Best-effort/never-throws throughout, same
+  philosophy as `UpdateService.CheckForUpdatesAsync` — a failed check (no network, GitHub unreachable,
+  rate-limited) just means no prompt this time, never an error. Never downloads or applies anything
+  itself, unlike `UpdateService` — see `Views.LinuxUpdatePromptDialog` above for why (installing a
+  `.deb` needs root, so the only in-app action is opening the browser to the release page).
 
 ### Models (`Yoink/Models/`)
 
@@ -859,17 +892,33 @@ project root — that's exactly the flat structure this reorg moved away from.
 - `Assets/app-icons/app-icon-{blue,orange,purple,green,red}.png` — the app/window/taskbar/tray icon, one per accent preset, applied live by `App.ApplyAccent` (see above) rather than one fixed icon like the old `tray-icon.png` (deleted — this fully replaces it, including as the Velopack package icon on every platform, see the release workflow note below). Generated from `Assets/brand/badges/yoink-badge-*.svg`'s exact geometry via a one-off SkiaSharp render — see `BRANDING.md`'s "The mark" section for the recipe if the mark ever changes and these need regenerating. Included via `<AvaloniaResource Include="Assets/**" />` in `Yoink.csproj`, same as every other asset. `Assets/brand/` holds the separate design-tokens/mark/wordmark/badge SVGs these PNGs (and the header's native `Path.YoinkMark`) were sourced from — see `BRANDING.md` for the full breakdown of what's wired into the running app versus staged for reference.
 - Theme: `App.axaml` sets `RequestedThemeVariant` at startup from the saved preference (`ThemePreference.System/Light/Dark` in `AppSettings`). `System` maps to Avalonia's `ThemeVariant.Default`, which follows the OS light/dark setting live. `Views.SettingsView`'s Theme combo box flips `Application.Current.RequestedThemeVariant` immediately and persists the choice via `SettingsService`. `App.ToThemeVariant` is the single place that maps preference → `ThemeVariant`; reuse it rather than re-deriving the mapping.
 - **`BRANDING.md`** (repo root) — the design tokens (colors, type, spacing/radius) implemented as Avalonia resources/style classes in `App.axaml`. Read it before adding new UI: reuse the existing style classes (`Card`, `AppTitle`, `Subtitle`, `SectionTitle`, `Caption`, `Primary` on buttons) instead of one-off styling, so new screens stay visually consistent with the rest of the app.
-- `.github/workflows/release.yml` — cuts a Velopack release on every `v*` tag push (`git tag v0.1.0 && git
-  push origin v0.1.0`). `vpk pack`'s `--icon` always points at `Assets/app-icons/app-icon-blue.png`
-  specifically (not whichever accent a given user happens to have picked in-app) — the package/installer
-  icon is this app's one fixed public identity, unrelated to `App.ApplyAccent`'s live per-window icon
-  swapping (see `Assets/app-icons/...` above). Uploading packaged builds straight to this repo's GitHub Releases (no separate
-  hosting — see the `update-distribution-strategy` project memory for why, including how download counts
-  and traffic are visible there for free without building any telemetry). All three platform jobs are
-  defined, but per the agreed rollout order (Ubuntu first) the `release-windows`/`release-macos` jobs carry
-  `if: false` with a TODO explaining what's needed before flipping them on (real-hardware verification, and
-  proper `.ico`/`.icns` icons — only the Linux leg has been checked against the PNG in `Assets/`). Ordinary
-  pushes to `master` don't trigger this at all, only an explicit tag does.
+- `.github/workflows/release.yml` — cuts a release on every `v*` tag push (`git tag v0.1.0 && git
+  push origin v0.1.0`). The Linux job (`release-linux`, the only enabled one) publishes a
+  self-contained build with `-p:Version=<tag>` (see `GitHubReleaseUpdateChecker` above for why that
+  flag specifically matters), stages it into a fakeroot tree under `packaging/deb/`'s files, and
+  builds a plain `.deb` directly via `dpkg-deb --build --root-owner-group` — no Velopack involved for
+  Linux at all any more (see "Key dependency: Velopack" below for why it was dropped there), uploaded
+  via the `gh` CLI already on the runner (`gh release create`/`gh release upload`) rather than
+  `vpk upload github`. `release-windows`/`release-macos` are unaffected — still Velopack (`vpk pack`'s
+  `--icon` always points at `Assets/app-icons/app-icon-blue.png` specifically, not whichever accent a
+  given user happens to have picked in-app — the package/installer icon is this app's one fixed public
+  identity, unrelated to `App.ApplyAccent`'s live per-window icon swapping) — and per the agreed
+  rollout order (Ubuntu first) they still carry `if: false` with a TODO explaining what's needed
+  before flipping them on (real-hardware verification, and proper `.ico`/`.icns` icons). Uploading
+  packaged builds straight to this repo's GitHub Releases either way (no separate hosting — see the
+  `update-distribution-strategy` project memory for why, including how download counts and traffic
+  are visible there for free without building any telemetry). Ordinary pushes to `master` don't
+  trigger this at all, only an explicit tag does.
+- `packaging/deb/` — the `.deb` packaging inputs `release.yml`'s Linux job stages and builds from
+  (`control.template`, `yoink.desktop`, `postinst`/`postrm`) — see that folder's own README for the
+  full local build/test recipe and exactly what's still genuinely unverified (a real `apt install`
+  on a clean Ubuntu machine). Deliberately not a top-level `debian/` — that would imply the full
+  `debuild`/`dpkg-buildpackage` source-package toolchain, which this doesn't use; `dpkg-deb --build`
+  runs directly against a hand-staged tree instead. Installs everything under `/opt/yoink/`
+  (FHS-sanctioned for a bundle shipping its own runtime — same shape Chrome/VS Code/Slack use),
+  symlinked from `/usr/bin/yoink`; the `.desktop` file plus an icon installed to the standard hicolor
+  theme path is what makes Yoink show up in the app launcher/search at all — neither existed
+  anywhere in this repo before this was added.
 
 ### Key dependency: yt-dlp (external, on PATH or Yoink-managed)
 
@@ -901,13 +950,21 @@ version-sensitive (property defaults, enum semantics).
 
 ### Key dependency: Velopack (NuGet package + `vpk` CLI tool)
 
-Update checking/downloading/applying (`Services/UpdateService.cs`) and packaging
-(`.github/workflows/release.yml`) both go through [Velopack](https://velopack.io/) (MIT-licensed) — the
-`Velopack` NuGet package in-app, and its `vpk` CLI tool (installed as a `dotnet tool` in CI, not referenced
-by the project itself) for building release packages. See the `update-distribution-strategy` project memory
-for the full comparison against alternatives (a real APT repo/PPA, Snap, etc.) and why Velopack won for
-Windows/macOS while Linux stays AppImage-only for now. Two things about it are load-bearing enough to
-repeat here even though they're also covered where the relevant code lives:
+Update checking/downloading/applying (`Services/UpdateService.cs`) and Windows/macOS packaging
+(`.github/workflows/release.yml`'s `release-windows`/`release-macos` jobs) go through
+[Velopack](https://velopack.io/) (MIT-licensed) — the `Velopack` NuGet package in-app, and its `vpk`
+CLI tool (installed as a `dotnet tool` in CI, not referenced by the project itself) for building
+release packages. **Linux no longer uses Velopack at all** — confirmed directly against the installed
+`vpk` CLI that it can only produce a self-updating AppImage there (no `.deb`/APT-repo mode), so the
+Linux release job builds a plain `.deb` directly instead (see `packaging/deb/` and
+`Services/GitHubReleaseUpdateChecker.cs`); `Velopack`/`VelopackApp.Build().Run()` stay in the shared
+`Program.cs`/`Yoink.csproj` regardless, since Windows/macOS still need them — that call is simply a
+guaranteed no-op for a `.deb`-launched Yoink, never invoked with Velopack's own hook arguments. See
+the `update-distribution-strategy` project memory for the full historical comparison against
+alternatives (a real APT repo/PPA, Snap, etc.) that led here — note that memory predates the `.deb`
+decision and still describes Linux as "AppImage-only for now"; this section is the current state.
+Two things about Velopack itself are load-bearing enough to repeat here even though they're also
+covered where the relevant code lives:
 - `VelopackApp.Build().Run()` must be the literal first line of `Program.Main`, before anything else
   (`UpdateService`'s notes above explain the verified failure mode if this is ever moved or removed).
 - Its exact C# API (verified in this session via reflection against the real installed 1.2.0 package rather

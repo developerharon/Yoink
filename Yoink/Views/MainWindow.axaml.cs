@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private readonly YtDlpClient _ytDlp = new();
     private readonly DownloadQueueService _queue;
     private readonly UpdateService _updates = new();
+    private readonly GitHubReleaseUpdateChecker _linuxUpdateChecker = new();
     private readonly DependencyProvisioningService _dependencies = new();
     private readonly ObservableCollection<DownloadQueueItem> _items = new();
 
@@ -170,9 +171,13 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Silent, throttled to roughly once a day via <see cref="AppSettings.LastUpdateCheckUtc"/>.
-    /// Only ever prompts (<see cref="UpdatePromptDialog"/>) — never downloads or installs anything
-    /// without that explicit click, per the agreed update UX. A no-op for a `dotnet run`/self-built
-    /// copy, since <see cref="UpdateService.IsInstalled"/> is false there.
+    /// Only ever prompts — never downloads or installs anything without that explicit click, per the
+    /// agreed update UX. On Linux this means <see cref="GitHubReleaseUpdateChecker"/>/
+    /// <see cref="LinuxUpdatePromptDialog"/> instead of <see cref="UpdateService"/>/
+    /// <see cref="UpdatePromptDialog"/> — a `.deb` install has no Velopack context at all (see
+    /// <see cref="UpdateService.IsInstalled"/>'s own doc comment), so Velopack's own check would
+    /// always report nothing there. Windows/macOS are unaffected: same Velopack flow as before,
+    /// still a no-op for a `dotnet run`/self-built copy either way.
     /// </summary>
     private async Task CheckForUpdatesAsync()
     {
@@ -184,6 +189,14 @@ public partial class MainWindow : Window
 
         settings.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
         SettingsService.Save(settings);
+
+        if (OperatingSystem.IsLinux())
+        {
+            var release = await _linuxUpdateChecker.CheckForUpdateAsync();
+            if (release is not null)
+                await LinuxUpdatePromptDialog.ShowAsync(this, release);
+            return;
+        }
 
         var updateInfo = await _updates.CheckForUpdatesAsync();
         if (updateInfo is not null)

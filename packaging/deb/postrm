@@ -1,0 +1,8 @@
+#!/bin/sh
+# Symmetric refresh to postinst's, run after files are removed — same best-effort reasoning.
+set -e
+
+gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+
+exit 0

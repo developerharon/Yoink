@@ -1,14 +1,22 @@
 name: Release
 
-# Cuts a Velopack release (see the "update-distribution-strategy" project memory / CLAUDE.md's
-# UpdateService notes for the full reasoning) whenever a version tag is pushed — e.g.
-# `git tag v0.1.0 && git push origin v0.1.0`. Nothing here runs on an ordinary push to master.
+# Cuts a release whenever a version tag is pushed — e.g. `git tag v0.1.0 && git push origin v0.1.0`.
+# Nothing here runs on an ordinary push to master.
 #
-# All three platforms are wired up (Velopack is one tool for all of them), but per the agreed
-# rollout plan — Ubuntu first, Windows/macOS later — the windows/macos jobs below are gated off
-# with `if: false` until someone has actually verified a packaged build on real Windows/macOS
-# hardware and prepared proper platform icons (see the TODO comments on each job). Flip that line
-# to enable a platform once it's been checked.
+# Linux builds a plain .deb (see packaging/deb/ and its own README) rather than going through
+# Velopack — confirmed directly against the installed `vpk` CLI that it can only produce a
+# self-updating AppImage on Linux, no .deb mode at all, and the AppImage packaging is deliberately
+# dropped in favor of a real installable .deb that shows up in the desktop's app launcher/search
+# (see the update-distribution-strategy project memory for the full history). Since a .deb install
+# has no Velopack context, Yoink's own in-app update check falls back to a lightweight GitHub
+# Releases API check on Linux (see Services/GitHubReleaseUpdateChecker.cs) that only ever opens the
+# browser to the release page — never auto-applies, since installing a .deb needs root.
+#
+# Windows/macOS still go through Velopack (Setup.exe / .app bundle) per the agreed rollout plan —
+# Ubuntu first, Windows/macOS later — so those two jobs below stay gated off with `if: false` until
+# someone has actually verified a packaged build on real Windows/macOS hardware and prepared proper
+# platform icons (see the TODO comments on each job). Flip that line to enable a platform once it's
+# been checked.
 on:
   push:
     tags:
@@ -34,26 +42,51 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Publish
-        run: dotnet publish Yoink/Yoink.csproj -c Release -r linux-x64 -o publish --self-contained true
-
-      - name: Install vpk
-        run: dotnet tool install -g vpk --version 1.2.0
-
-      - name: Download previous release (for delta packages)
-        # Fails on the very first release, since there's nothing previous to diff against yet —
-        # that's expected and fine, vpk pack below still produces a full (non-delta) package.
-        continue-on-error: true
-        run: vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pack (produces the self-updating AppImage)
+        # -p:Version= flows into AssemblyVersion/FileVersion for this SDK-style project — needed so
+        # GitHubReleaseUpdateChecker's own comparison (Assembly.GetEntryAssembly().GetName().Version)
+        # reads the real released version rather than MSBuild's unset-Version default of 1.0.0.0.
+        # Windows/macOS don't need this: their update check reads Velopack's own version bookkeeping
+        # instead, unaffected by this flag either way.
         run: >
-          vpk pack -u Yoink -v ${{ steps.version.outputs.version }} -p publish -e Yoink
-          --packTitle Yoink --icon Yoink/Assets/app-icons/app-icon-blue.png -r linux-x64
+          dotnet publish Yoink/Yoink.csproj -c Release -r linux-x64 -o publish --self-contained true
+          -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Stage .deb layout
+        run: |
+          set -eu
+          VERSION="${{ steps.version.outputs.version }}"
+          PKGROOT="pkgroot"
+
+          mkdir -p "$PKGROOT/opt/yoink"
+          cp -r publish/* "$PKGROOT/opt/yoink/"
+          chmod +x "$PKGROOT/opt/yoink/Yoink"
+
+          mkdir -p "$PKGROOT/usr/bin"
+          ln -s /opt/yoink/Yoink "$PKGROOT/usr/bin/yoink"
+
+          mkdir -p "$PKGROOT/usr/share/applications"
+          cp packaging/deb/yoink.desktop "$PKGROOT/usr/share/applications/"
+
+          mkdir -p "$PKGROOT/usr/share/icons/hicolor/256x256/apps"
+          cp Yoink/Assets/app-icons/app-icon-blue.png "$PKGROOT/usr/share/icons/hicolor/256x256/apps/yoink.png"
+
+          mkdir -p "$PKGROOT/DEBIAN"
+          sed "s/{{VERSION}}/$VERSION/" packaging/deb/control.template > "$PKGROOT/DEBIAN/control"
+          cp packaging/deb/postinst packaging/deb/postrm "$PKGROOT/DEBIAN/"
+          chmod 755 "$PKGROOT/DEBIAN/postinst" "$PKGROOT/DEBIAN/postrm"
+
+      - name: Build .deb
+        run: dpkg-deb --build --root-owner-group pkgroot "yoink_${{ steps.version.outputs.version }}_amd64.deb"
 
       - name: Upload to GitHub Releases
-        run: >
-          vpk upload github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
-          --publish --releaseName "Yoink ${{ steps.version.outputs.version }}" --tag ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          FILE="yoink_${{ steps.version.outputs.version }}_amd64.deb"
+          gh release create "${{ github.ref_name }}" "$FILE" \
+            --title "Yoink ${{ steps.version.outputs.version }}" --notes "" \
+            || gh release upload "${{ github.ref_name }}" "$FILE" --clobber
 
   release-windows:
     # TODO: enable once a packaged build has been verified on real Windows hardware, and a proper

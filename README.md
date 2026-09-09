@@ -75,36 +75,27 @@ macOS rather than being tied to Windows Forms.
 
 ## Download
 
-Grab the latest self-updating AppImage from this repo's
+Grab the latest `.deb` from this repo's
 [Releases page](https://github.com/developerharon/Yoink/releases/latest) — no separate site or account
 needed.
 
-### Running the AppImage on Ubuntu
-
-Ubuntu 22.04 and newer don't ship the FUSE library AppImages need to mount themselves at runtime, so
-just `chmod`-ing and running one can fail with a `dlopen(): error loading libfuse.so.2`-style error (or
-just silently do nothing). Install it once, then run the AppImage as normal:
+### Installing the .deb on Ubuntu
 
 ```
-sudo apt install libfuse2t64   # Ubuntu 24.04 and newer
-sudo apt install libfuse2      # Ubuntu 22.04 and older
-
-chmod +x Yoink.AppImage
-./Yoink.AppImage
+sudo apt install ./yoink_<version>_amd64.deb
 ```
 
-Prefer not to install anything system-wide? Every AppImage also has a built-in FUSE-free fallback —
-slower to start each time (it unpacks itself into a temp folder first), but needs nothing installed:
+(`apt install ./...` rather than `dpkg -i` so any missing dependency is resolved automatically —
+though Yoink ships self-contained with its own .NET runtime, so in practice there's nothing to
+resolve beyond the optional `libnotify-bin`, used for desktop notifications if it's present.)
 
-```
-chmod +x Yoink.AppImage
-./Yoink.AppImage --appimage-extract-and-run
-```
+That's it — Yoink shows up in the app launcher/search like any other installed app from then on, and
+`sudo apt remove yoink` uninstalls it cleanly. Unlike the AppImage this used to ship as, installing a
+`.deb` update isn't something the app can do for itself (that needs root) — Yoink checks for new
+releases on its own in the background and prompts when one's available, but "Open Release Page" is as
+far as that goes; downloading and re-running `apt install` on the new `.deb` is a manual step.
 
-Either way, the app checks for new releases on its own from then on, prompting before it downloads or
-installs anything.
-
-Linux (Ubuntu/AppImage) is the only packaged platform for now — Windows and macOS builds are pending
+Linux (Ubuntu/.deb) is the only packaged platform for now — Windows and macOS builds are pending
 real-hardware verification. Until those are out, running from source is the way to use it there too — see
 "Using it" below.
 
@@ -158,7 +149,9 @@ you'd rather manage them yourself (a distro package, a version you're pinning, e
 - **One settings screen** for all of it — theme, clipboard watching, tray behavior, speed limits,
   concurrency, and scheduling.
 - **Checks for updates on its own** (once installed from a real release, not a source build) — silently,
-  once a day, and always asks before downloading or installing anything.
+  once a day, and always asks before doing anything about it. On Windows/macOS that means downloading
+  and installing in-app with one click; on Linux (a `.deb` install can't be updated without root) it
+  means opening the release page for you to grab the new `.deb` yourself.
 
 ## Contributing
 
