@@ -145,6 +145,40 @@ public class BuildHelpersTests
     }
 
     [Fact]
+    public void BuildFileDestinationPath_KeepsTheGivenFileNameVerbatim_UnlikeBuildDestinationPath()
+    {
+        // Unlike the video path, nothing gets appended — "Yoink.AppImage" should stay exactly that,
+        // not gain a second extension.
+        var path = DownloadQueueService.BuildFileDestinationPath("Yoink.AppImage", System.IO.Path.GetTempPath());
+
+        Assert.Equal("Yoink.AppImage", System.IO.Path.GetFileName(path));
+    }
+
+    [Fact]
+    public void BuildFileDestinationPath_StripsInvalidFileNameCharacters()
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        var fileName = "Some" + new string(invalid) + "File.pdf";
+
+        var path = DownloadQueueService.BuildFileDestinationPath(fileName, System.IO.Path.GetTempPath());
+
+        foreach (var c in invalid)
+            Assert.DoesNotContain(c, System.IO.Path.GetFileName(path));
+    }
+
+    [Fact]
+    public void BuildFileDestinationPath_FallsBackToDownload_WhenNameIsEntirelyInvalidCharacters()
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        if (invalid.Length == 0)
+            return; // no platform-invalid characters to construct this case with
+
+        var path = DownloadQueueService.BuildFileDestinationPath(new string(invalid), System.IO.Path.GetTempPath());
+
+        Assert.Equal("download", System.IO.Path.GetFileName(path));
+    }
+
+    [Fact]
     public void ResolveDownloadFolder_FallsBackToPlatformDefault_WhenUnset()
     {
         var settings = new AppSettings { DownloadFolder = null };
@@ -176,6 +210,39 @@ public class BuildHelpersTests
         var resolved = DownloadQueueService.ResolveDownloadFolder(settings);
 
         Assert.Equal(configured, resolved);
+    }
+
+    [Fact]
+    public void InsertPathSuffix_ReturnsPathUnchanged_ForSuffixZeroOrLess()
+    {
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Title.mp4");
+
+        Assert.Equal(path, DownloadQueueService.InsertPathSuffix(path, 0));
+        Assert.Equal(path, DownloadQueueService.InsertPathSuffix(path, -1));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void InsertPathSuffix_InsertsNumberBeforeExtension(int suffix)
+    {
+        var folder = System.IO.Path.GetTempPath();
+        var path = System.IO.Path.Combine(folder, "Title.mp4");
+
+        var result = DownloadQueueService.InsertPathSuffix(path, suffix);
+
+        Assert.Equal(System.IO.Path.Combine(folder, $"Title ({suffix}).mp4"), result);
+    }
+
+    [Fact]
+    public void InsertPathSuffix_KeepsTheDirectory()
+    {
+        var folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SomeDownloadFolder");
+        var path = System.IO.Path.Combine(folder, "Report.pdf");
+
+        var result = DownloadQueueService.InsertPathSuffix(path, 1);
+
+        Assert.Equal(folder, System.IO.Path.GetDirectoryName(result));
     }
 }
 

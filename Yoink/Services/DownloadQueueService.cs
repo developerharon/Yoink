@@ -35,6 +35,14 @@ public sealed class DownloadQueueService : IDisposable
         "queue.db");
 
     private readonly YtDlpClient _ytDlp;
+
+    /// <summary>
+    /// Owned by this service so its lifetime (and its <see cref="HttpClient"/>) matches the queue's
+    /// own — every <see cref="DownloadKind.File"/> item's actual download goes through this one
+    /// shared instance rather than a new engine per item.
+    /// </summary>
+    private readonly DownloadEngine _downloadEngine = new();
+
     private readonly SqliteConnection _connection;
 
     // SQLite only ever allows one writer at a time regardless of how many connections you open —
@@ -114,11 +122,20 @@ public sealed class DownloadQueueService : IDisposable
     /// download starts the moment this item is dequeued instead of pausing to look the title up
     /// again first.
     /// </summary>
+    /// <param name="infoJson">
+    /// The same already-resolved video's <see cref="YtDlpVideoInfo.RawJson"/>, alongside
+    /// <paramref name="title"/> — see <see cref="DownloadQueueItem.InfoJson"/>'s own doc comment for
+    /// how <see cref="ProcessVideoItemAsync"/> uses (and clears) it. Meaningless without a
+    /// <paramref name="title"/> already set too, since <see cref="ProcessVideoItemAsync"/> only ever
+    /// looks at it once it already knows it doesn't need to resolve the title itself.
+    /// </param>
     public async Task<DownloadQueueItem> EnqueueAsync(
         string url,
         int resolution,
         string title = "",
         string containerFormat = "mp4",
+        DownloadKind kind = DownloadKind.Video,
+        string? infoJson = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -128,9 +145,9 @@ public sealed class DownloadQueueService : IDisposable
         {
             await using var command = _connection.CreateCommand();
             command.CommandText = """
-                INSERT INTO download_queue (Url, Title, Resolution, ContainerFormat, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt)
+                INSERT INTO download_queue (Url, Title, Resolution, ContainerFormat, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt, Kind, InfoJson)
                 VALUES ($url, $title, $resolution, $containerFormat, NULL, $status, 0, NULL,
-                        (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt);
+                        (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt, $kind, $infoJson);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$url", url);
@@ -139,6 +156,8 @@ public sealed class DownloadQueueService : IDisposable
             command.Parameters.AddWithValue("$containerFormat", containerFormat);
             command.Parameters.AddWithValue("$status", DownloadQueueStatus.Pending.ToString());
             command.Parameters.AddWithValue("$createdAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue("$kind", kind.ToString());
+            command.Parameters.AddWithValue("$infoJson", (object?)infoJson ?? DBNull.Value);
 
             return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
         }, cancellationToken).ConfigureAwait(false);
@@ -150,6 +169,8 @@ public sealed class DownloadQueueService : IDisposable
             Title = title,
             Resolution = resolution,
             ContainerFormat = containerFormat,
+            Kind = kind,
+            InfoJson = infoJson,
             Status = DownloadQueueStatus.Pending,
             CreatedAt = DateTimeOffset.Now
         };
@@ -306,6 +327,18 @@ public sealed class DownloadQueueService : IDisposable
     {
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Cheap (a File.Exists stat() call per Completed row) and unconditional every
+            // iteration — see CheckForMissingFilesAsync's own doc comment for why that's fine even
+            // for a queue that's never pruned.
+            try
+            {
+                await CheckForMissingFilesAsync(stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
             var settings = SettingsService.Load();
             var capacity = Math.Max(1, settings.MaxConcurrentDownloads) - _activeCancellations.Count;
 
@@ -391,39 +424,16 @@ public sealed class DownloadQueueService : IDisposable
 
         try
         {
-            if (string.IsNullOrEmpty(item.Title))
-            {
-                var info = await _ytDlp.GetVideoInfoAsync(item.Url, itemCts.Token).ConfigureAwait(false);
-                item.Title = info.Title;
-            }
-
             // Re-read settings rather than reusing whatever ProcessLoopAsync last saw: this item
             // may have been sitting Pending for a while, and the download-folder/speed-limit
             // settings could have changed since.
             var settings = SettingsService.Load();
-
-            item.FilePath ??= BuildDestinationPath(item.Title, ResolveDownloadFolder(settings), item.ContainerFormat);
-
-            var selector = BuildFormatSelector(item.Resolution);
-            var progress = new Progress<YtDlpDownloadProgress>(p =>
-            {
-                item.Progress = p.Fraction;
-                item.DownloadedBytes = p.BytesDownloaded;
-                item.TotalBytes = p.TotalBytes;
-                RaiseChanged(item);
-            });
-
             var rateLimitKBps = ComputeRateLimitKBps(settings);
 
-            await _ytDlp.DownloadAsync(
-                item.Url,
-                selector,
-                item.FilePath,
-                expectedSegmentCount: 2,
-                rateLimitKBps: rateLimitKBps,
-                containerFormat: item.ContainerFormat,
-                progress: progress,
-                cancellationToken: itemCts.Token).ConfigureAwait(false);
+            if (item.Kind == DownloadKind.Video)
+                await ProcessVideoItemAsync(item, settings, rateLimitKBps, itemCts.Token).ConfigureAwait(false);
+            else
+                await ProcessFileItemAsync(item, settings, rateLimitKBps, itemCts.Token).ConfigureAwait(false);
 
             item.Status = DownloadQueueStatus.Completed;
             item.Progress = 1.0;
@@ -468,13 +478,111 @@ public sealed class DownloadQueueService : IDisposable
         }
     }
 
+    /// <summary>
+    /// How long a resolved <see cref="DownloadQueueItem.InfoJson"/> is trusted before
+    /// <see cref="ProcessVideoItemAsync"/> discards it rather than handing it to
+    /// <see cref="YtDlpClient.DownloadAsync"/> — its format URLs are signed and time-limited, and an
+    /// item can sit <see cref="DownloadQueueStatus.Pending"/> a while behind
+    /// <c>AppSettings.MaxConcurrentDownloads</c>/scheduling before actually being processed. Deliberately
+    /// generous (not tuned to any real observed expiry) since <see cref="YtDlpClient.DownloadAsync"/>'s
+    /// own infoJson-failure retry is the actual backstop against a stale one slipping past this; this
+    /// check just avoids the doomed attempt (and its retry delay) in the common case of a long wait.
+    /// </summary>
+    private static readonly TimeSpan InfoJsonMaxAge = TimeSpan.FromMinutes(10);
+
+    /// <summary>The original yt-dlp download path — unchanged in substance from before <see cref="DownloadKind"/> existed, just split out of <see cref="ProcessItemAsync"/> so that method can branch on kind.</summary>
+    private async Task ProcessVideoItemAsync(DownloadQueueItem item, AppSettings settings, int? rateLimitKBps, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(item.Title))
+        {
+            var info = await _ytDlp.GetVideoInfoAsync(item.Url, cancellationToken).ConfigureAwait(false);
+            item.Title = info.Title;
+        }
+
+        // Single-use regardless of outcome (used or discarded as too stale) — see
+        // DownloadQueueItem.InfoJson's own doc comment for why this is cleared here rather than left
+        // for a later PersistAsync call to overwrite with the same value.
+        var infoJson = item.InfoJson;
+        item.InfoJson = null;
+        var infoJsonToUse = !string.IsNullOrEmpty(infoJson) && DateTimeOffset.Now - item.CreatedAt < InfoJsonMaxAge
+            ? infoJson
+            : null;
+
+        if (item.FilePath is null)
+        {
+            var candidatePath = BuildDestinationPath(item.Title, ResolveDownloadFolder(settings), item.ContainerFormat);
+            item.FilePath = await ReserveUniqueDestinationPathAsync(item.Id, candidatePath, cancellationToken).ConfigureAwait(false);
+        }
+
+        var selector = BuildFormatSelector(item.Resolution);
+        var progress = new Progress<YtDlpDownloadProgress>(p =>
+        {
+            item.Progress = p.Fraction;
+            item.DownloadedBytes = p.BytesDownloaded;
+            item.TotalBytes = p.TotalBytes;
+            RaiseChanged(item);
+        });
+
+        await _ytDlp.DownloadAsync(
+            item.Url,
+            selector,
+            item.FilePath,
+            expectedSegmentCount: 2,
+            rateLimitKBps: rateLimitKBps,
+            containerFormat: item.ContainerFormat,
+            progress: progress,
+            infoJson: infoJsonToUse,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The generic direct-link path via <see cref="DownloadEngine"/> — a plain HTTP(S) URL to
+    /// whatever file (PDF, .exe, .deb, ...), not a YouTube video. <see cref="DownloadQueueItem.Title"/>
+    /// doubles as the resolved filename here, same "skip re-resolving it" reasoning as the video
+    /// path above: <c>Views.AddDownloadDialog</c>'s generic-file flow already probes the URL before
+    /// enqueueing (see that view's own notes), so this only probes again for an item that somehow
+    /// reached here without one — enqueued directly through <see cref="EnqueueAsync"/>, for instance.
+    /// </summary>
+    private async Task ProcessFileItemAsync(DownloadQueueItem item, AppSettings settings, int? rateLimitKBps, CancellationToken cancellationToken)
+    {
+        var sourceUri = new Uri(item.Url);
+
+        if (string.IsNullOrEmpty(item.Title))
+        {
+            var probe = await _downloadEngine.ProbeAsync(sourceUri, cancellationToken).ConfigureAwait(false);
+            item.Title = probe.FileName ?? DownloadEngine.GetFileNameFromUri(sourceUri);
+        }
+
+        if (item.FilePath is null)
+        {
+            var candidatePath = BuildFileDestinationPath(item.Title, ResolveDownloadFolder(settings));
+            item.FilePath = await ReserveUniqueDestinationPathAsync(item.Id, candidatePath, cancellationToken).ConfigureAwait(false);
+        }
+
+        var progress = new Progress<DownloadEngineProgress>(p =>
+        {
+            item.Progress = p.Fraction;
+            item.DownloadedBytes = p.BytesDownloaded;
+            item.TotalBytes = p.TotalBytes;
+            RaiseChanged(item);
+        });
+
+        await _downloadEngine.DownloadAsync(
+            sourceUri,
+            item.FilePath,
+            progress: progress,
+            rateLimitKBps: rateLimitKBps,
+            maxConnections: Math.Max(1, settings.MaxConnectionsPerDownload),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
     private void CompleteWaiter(DownloadQueueItem item)
     {
         if (_waiters.TryRemove(item.Id, out var tcs))
             tcs.TrySetResult(item);
     }
 
-    // internal (not private) so Yoink.Tests can exercise these two directly.
+    // internal (not private) so Yoink.Tests can exercise these directly.
     internal static string BuildFormatSelector(int resolution) =>
         $"bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/best";
 
@@ -482,6 +590,18 @@ public sealed class DownloadQueueService : IDisposable
     {
         var fileName = string.Concat(title.Split(Path.GetInvalidFileNameChars())) + "." + containerFormat;
         return Path.Combine(downloadFolder, fileName);
+    }
+
+    /// <summary>
+    /// Same idea as <see cref="BuildDestinationPath"/> but for a <see cref="DownloadKind.File"/> item
+    /// — <paramref name="fileName"/> already carries whatever extension it actually has (from
+    /// <see cref="DownloadEngine.ProbeAsync"/> or the URL itself), so unlike the video path nothing
+    /// gets appended to it.
+    /// </summary>
+    internal static string BuildFileDestinationPath(string fileName, string downloadFolder)
+    {
+        var sanitized = string.Concat(fileName.Split(Path.GetInvalidFileNameChars()));
+        return Path.Combine(downloadFolder, string.IsNullOrWhiteSpace(sanitized) ? "download" : sanitized);
     }
 
     /// <summary>
@@ -504,6 +624,142 @@ public sealed class DownloadQueueService : IDisposable
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadItem(reader) : null;
         }, cancellationToken);
+
+    /// <summary>
+    /// The other half of "one-on-one relation between a download file and the download list": every
+    /// <see cref="DownloadQueueStatus.Completed"/> row's <see cref="DownloadQueueItem.FilePath"/> is
+    /// checked for existence, and any that's gone — deleted, or moved elsewhere on disk; this app has
+    /// no way to tell those two apart, and doesn't need to — is moved to
+    /// <see cref="DownloadQueueStatus.Missing"/> instead of going on showing "Completed" for a file
+    /// that's no longer actually there. <see cref="File.Exists"/> is a cheap stat() call, so scanning
+    /// even a few hundred completed rows (this queue is deliberately never pruned — see the class doc
+    /// comment) every <see cref="ProcessLoopAsync"/> iteration isn't worth a dedicated timer/throttle.
+    ///
+    /// One-way: a row already <see cref="DownloadQueueStatus.Missing"/> is left alone here regardless
+    /// of what's on disk now — <see cref="RetryAsync"/> (the same button
+    /// <see cref="DownloadQueueStatus.Failed"/>/<see cref="DownloadQueueStatus.Canceled"/> already
+    /// show, since <see cref="DownloadQueueItem.CanRetry"/> covers all three) is what brings it back,
+    /// re-downloading to this exact same <see cref="DownloadQueueItem.FilePath"/> — see
+    /// <see cref="ReserveUniqueDestinationPathAsync"/>'s doc comment for why a retry never picks a new
+    /// path.
+    ///
+    /// Internal (not private) so Yoink.Tests can trigger a scan deterministically instead of waiting
+    /// out <see cref="ProcessLoopAsync"/>'s own real-time cadence.
+    /// </summary>
+    internal async Task CheckForMissingFilesAsync(CancellationToken cancellationToken = default)
+    {
+        var missingIds = await WithLockAsync(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT Id, FilePath FROM download_queue WHERE Status = $status AND FilePath IS NOT NULL";
+            command.Parameters.AddWithValue("$status", DownloadQueueStatus.Completed.ToString());
+
+            var missing = new List<long>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!File.Exists(reader.GetString(1)))
+                    missing.Add(reader.GetInt64(0));
+            }
+
+            return missing;
+        }, cancellationToken).ConfigureAwait(false);
+
+        foreach (var id in missingIds)
+            await MarkMissingAsync(id, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task MarkMissingAsync(long id, CancellationToken cancellationToken)
+    {
+        var item = await WithLockAsync(async () =>
+        {
+            await using (var command = _connection.CreateCommand())
+            {
+                command.CommandText = "UPDATE download_queue SET Status = $status, ErrorMessage = $errorMessage WHERE Id = $id";
+                command.Parameters.AddWithValue("$status", DownloadQueueStatus.Missing.ToString());
+                command.Parameters.AddWithValue("$errorMessage", "File no longer found on disk.");
+                command.Parameters.AddWithValue("$id", id);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return await GetItemNoLockAsync(id, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (item is not null)
+            RaiseChanged(item);
+    }
+
+    /// <summary>
+    /// Picks a destination path nothing else already has — the other building block behind
+    /// "one-on-one relation between a download file and the download list": <paramref name="candidatePath"/>
+    /// as-is if it's free, else "name (1).ext", "name (2).ext", ... (the same convention browsers and
+    /// OS file managers already use for a duplicate download) until one is. "Already has" means either
+    /// a file that already exists at that exact path on disk (protects a pre-existing, unrelated file
+    /// the user already had in their download folder too, not just Yoink's own downloads) or another
+    /// row in <c>download_queue</c> already recorded against that same path.
+    ///
+    /// Both the check and the reservation (persisting the chosen path immediately, before any bytes
+    /// are actually written) happen inside one <see cref="WithLockAsync{T}"/> acquisition so two items
+    /// dequeued concurrently (<see cref="AppSettings.MaxConcurrentDownloads"/> &gt; 1) that both
+    /// resolve to the same title can't both land on "name.ext" — the second one's check sees the
+    /// first's reservation the moment it queries, not only once the first's file actually exists on
+    /// disk (which wouldn't happen until well after this method returns).
+    ///
+    /// Only ever called for an item whose <see cref="DownloadQueueItem.FilePath"/> is still null —
+    /// see <see cref="ProcessVideoItemAsync"/>/<see cref="ProcessFileItemAsync"/>. A retried
+    /// <see cref="DownloadQueueStatus.Failed"/>/<see cref="DownloadQueueStatus.Canceled"/>/
+    /// <see cref="DownloadQueueStatus.Missing"/> item already has one from its first attempt and
+    /// deliberately reuses it as-is instead of coming back through here, so retrying re-downloads to
+    /// the exact same place rather than picking up a new "(1)" suffix.
+    /// </summary>
+    private Task<string> ReserveUniqueDestinationPathAsync(long itemId, string candidatePath, CancellationToken cancellationToken) =>
+        WithLockAsync(async () =>
+        {
+            var claimed = new HashSet<string>(StringComparer.Ordinal);
+            await using (var command = _connection.CreateCommand())
+            {
+                command.CommandText = "SELECT FilePath FROM download_queue WHERE FilePath IS NOT NULL AND Id != $id";
+                command.Parameters.AddWithValue("$id", itemId);
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    claimed.Add(reader.GetString(0));
+            }
+
+            var suffix = 0;
+            var chosen = candidatePath;
+            while (claimed.Contains(chosen) || File.Exists(chosen))
+            {
+                suffix++;
+                chosen = InsertPathSuffix(candidatePath, suffix);
+            }
+
+            await using (var command = _connection.CreateCommand())
+            {
+                command.CommandText = "UPDATE download_queue SET FilePath = $filePath WHERE Id = $id";
+                command.Parameters.AddWithValue("$filePath", chosen);
+                command.Parameters.AddWithValue("$id", itemId);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return chosen;
+        }, cancellationToken);
+
+    /// <summary>
+    /// "/dir/Title.mp4" + 1 → "/dir/Title (1).mp4" — the browser/OS-file-manager convention for
+    /// disambiguating a duplicate filename, applied by <see cref="ReserveUniqueDestinationPathAsync"/>.
+    /// <paramref name="suffix"/> of 0 (or less) returns <paramref name="path"/> unchanged. Internal
+    /// (not private) so Yoink.Tests can exercise it directly.
+    /// </summary>
+    internal static string InsertPathSuffix(string path, int suffix)
+    {
+        if (suffix <= 0)
+            return path;
+
+        var directory = Path.GetDirectoryName(path) ?? string.Empty;
+        var stem = Path.GetFileNameWithoutExtension(path);
+        var extension = Path.GetExtension(path);
+        return Path.Combine(directory, $"{stem} ({suffix}){extension}");
+    }
 
     private async Task UpdateStatusAsync(
         long id,
@@ -557,7 +813,7 @@ public sealed class DownloadQueueService : IDisposable
             await using var command = _connection.CreateCommand();
             command.CommandText = """
                 UPDATE download_queue
-                SET Title = $title, FilePath = $filePath, Status = $status, Progress = $progress, ErrorMessage = $errorMessage
+                SET Title = $title, FilePath = $filePath, Status = $status, Progress = $progress, ErrorMessage = $errorMessage, InfoJson = $infoJson
                 WHERE Id = $id
                 """;
             command.Parameters.AddWithValue("$title", item.Title);
@@ -565,6 +821,7 @@ public sealed class DownloadQueueService : IDisposable
             command.Parameters.AddWithValue("$status", item.Status.ToString());
             command.Parameters.AddWithValue("$progress", item.Progress);
             command.Parameters.AddWithValue("$errorMessage", (object?)item.ErrorMessage ?? DBNull.Value);
+            command.Parameters.AddWithValue("$infoJson", (object?)item.InfoJson ?? DBNull.Value);
             command.Parameters.AddWithValue("$id", item.Id);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
@@ -583,13 +840,14 @@ public sealed class DownloadQueueService : IDisposable
     /// </summary>
     private readonly record struct ColumnOrdinals(
         int Id, int Url, int Title, int Resolution, int ContainerFormat, int FilePath,
-        int Status, int Progress, int ErrorMessage, int Position, int CreatedAt)
+        int Status, int Progress, int ErrorMessage, int Position, int CreatedAt, int Kind, int InfoJson)
     {
         public static ColumnOrdinals FromReader(SqliteDataReader reader) => new(
             reader.GetOrdinal("Id"), reader.GetOrdinal("Url"), reader.GetOrdinal("Title"),
             reader.GetOrdinal("Resolution"), reader.GetOrdinal("ContainerFormat"), reader.GetOrdinal("FilePath"),
             reader.GetOrdinal("Status"), reader.GetOrdinal("Progress"), reader.GetOrdinal("ErrorMessage"),
-            reader.GetOrdinal("Position"), reader.GetOrdinal("CreatedAt"));
+            reader.GetOrdinal("Position"), reader.GetOrdinal("CreatedAt"), reader.GetOrdinal("Kind"),
+            reader.GetOrdinal("InfoJson"));
     }
 
     private static DownloadQueueItem ReadItem(SqliteDataReader reader) => ReadItem(reader, ColumnOrdinals.FromReader(reader));
@@ -607,7 +865,9 @@ public sealed class DownloadQueueService : IDisposable
         ErrorMessage = reader.IsDBNull(o.ErrorMessage) ? null : reader.GetString(o.ErrorMessage),
         Position = reader.GetInt32(o.Position),
         CreatedAt = DateTimeOffset.Parse(
-            reader.GetString(o.CreatedAt), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+            reader.GetString(o.CreatedAt), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+        Kind = Enum.Parse<DownloadKind>(reader.GetString(o.Kind)),
+        InfoJson = reader.IsDBNull(o.InfoJson) ? null : reader.GetString(o.InfoJson)
     };
 
     /// <summary>
@@ -641,6 +901,17 @@ public sealed class DownloadQueueService : IDisposable
         // and errors on a second run otherwise. Defaults every pre-existing row to "mp4", matching
         // this app's previous hardcoded behavior exactly.
         EnsureColumnExists("ContainerFormat", "TEXT NOT NULL DEFAULT 'mp4'");
+
+        // Same reasoning, added when generic (non-YouTube) file downloads were: every pre-existing
+        // row predates DownloadKind entirely, and "Video" (yt-dlp) is exactly what all of them
+        // already were before this column existed.
+        EnsureColumnExists("Kind", "TEXT NOT NULL DEFAULT 'Video'");
+
+        // Same reasoning again, added for the --load-info-json plumbing (see
+        // DownloadQueueItem.InfoJson's doc comment) — nullable, no default needed since every
+        // pre-existing row simply has nothing to reuse, same as a freshly-enqueued item with no
+        // title yet.
+        EnsureColumnExists("InfoJson", "TEXT");
     }
 
     private void EnsureColumnExists(string columnName, string columnDefinitionSql)
@@ -734,5 +1005,6 @@ public sealed class DownloadQueueService : IDisposable
         _workAvailable.Dispose();
         _dbLock.Dispose();
         _connection.Dispose();
+        _downloadEngine.Dispose();
     }
 }

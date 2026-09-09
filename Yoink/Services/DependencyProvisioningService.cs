@@ -227,7 +227,7 @@ public sealed class DependencyProvisioningService
     private async Task DownloadYtDlpAsync(CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(ManagedBinDirectory);
-        await _downloadEngine.DownloadAsync(new Uri(YtDlpDownloadUrl), ManagedYtDlpPath, progress: null, cancellationToken)
+        await _downloadEngine.DownloadAsync(new Uri(YtDlpDownloadUrl), ManagedYtDlpPath, progress: null, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
         MakeExecutable(ManagedYtDlpPath);
     }
@@ -246,7 +246,7 @@ public sealed class DependencyProvisioningService
             if (OperatingSystem.IsWindows())
             {
                 var archivePath = Path.Combine(tempDir, "ffmpeg.zip");
-                await _downloadEngine.DownloadAsync(new Uri(FfmpegWindowsUrl), archivePath, null, cancellationToken).ConfigureAwait(false);
+                await _downloadEngine.DownloadAsync(new Uri(FfmpegWindowsUrl), archivePath, cancellationToken: cancellationToken).ConfigureAwait(false);
                 ZipFile.ExtractToDirectory(archivePath, tempDir);
                 extractedFfmpeg = FindExtractedFile(tempDir, "ffmpeg.exe");
             }
@@ -254,7 +254,7 @@ public sealed class DependencyProvisioningService
             {
                 var zipUrl = await ResolveMacFfmpegZipUrlAsync(cancellationToken).ConfigureAwait(false);
                 var archivePath = Path.Combine(tempDir, "ffmpeg.zip");
-                await _downloadEngine.DownloadAsync(new Uri(zipUrl), archivePath, null, cancellationToken).ConfigureAwait(false);
+                await _downloadEngine.DownloadAsync(new Uri(zipUrl), archivePath, cancellationToken: cancellationToken).ConfigureAwait(false);
                 ZipFile.ExtractToDirectory(archivePath, tempDir);
                 extractedFfmpeg = FindExtractedFile(tempDir, "ffmpeg");
             }
@@ -266,7 +266,7 @@ public sealed class DependencyProvisioningService
                 // support GNU tar auto-detects) is present on essentially every real Linux install,
                 // including minimal ones, since apt/dpkg/rpm themselves depend on it.
                 var archivePath = Path.Combine(tempDir, "ffmpeg.tar.xz");
-                await _downloadEngine.DownloadAsync(new Uri(FfmpegLinuxUrl), archivePath, null, cancellationToken).ConfigureAwait(false);
+                await _downloadEngine.DownloadAsync(new Uri(FfmpegLinuxUrl), archivePath, cancellationToken: cancellationToken).ConfigureAwait(false);
                 await ExtractTarAsync(archivePath, tempDir, cancellationToken).ConfigureAwait(false);
                 extractedFfmpeg = FindExtractedFile(tempDir, "ffmpeg");
             }

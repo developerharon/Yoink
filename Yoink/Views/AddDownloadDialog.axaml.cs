@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Yoink.Models;
 using Yoink.Services;
 
 namespace Yoink.Views;
@@ -20,6 +21,15 @@ namespace Yoink.Views;
 /// at all) before anything is queued. Passing the already-resolved title through to
 /// <see cref="DownloadQueueService.EnqueueAsync"/> also means the background loop skips its own
 /// redundant metadata fetch once this item is dequeued, so the actual download starts immediately.
+///
+/// Now handles two kinds of URL, not just YouTube (turning Yoink into a general download manager):
+/// <see cref="DownloadUrlKind.IsYouTubeUrl"/> decides which — a YouTube URL goes through the
+/// resolve-video flow above unchanged, anything else is treated as a plain direct-link file and
+/// resolved instead via a quick <see cref="DownloadEngine.ProbeAsync"/> (filename/size/content-type),
+/// shown in the same "resolved, now confirm" panel with the video-only resolution/container pickers
+/// hidden. Either way, the resolved name is passed through to <see cref="DownloadQueueService.EnqueueAsync"/>'s
+/// <c>title</c> parameter, so <c>DownloadQueueService.ProcessFileItemAsync</c> skips its own
+/// redundant probe the same way the video path already skipped its redundant metadata fetch.
 /// </summary>
 public partial class AddDownloadDialog : Window
 {
@@ -28,6 +38,7 @@ public partial class AddDownloadDialog : Window
     private DownloadQueueService? _queue;
     private YtDlpClient? _ytDlp;
     private YtDlpVideoInfo? _resolvedInfo;
+    private DownloadKind _detectedKind = DownloadKind.Video;
     private Stage _stage = Stage.UrlEntry;
 
     public AddDownloadDialog()
@@ -76,20 +87,29 @@ public partial class AddDownloadDialog : Window
             return;
         }
 
-        await ResolveVideoAsync();
+        await ResolveAsync();
     }
 
-    private async Task ResolveVideoAsync()
+    private async Task ResolveAsync()
     {
         var url = TxtUrl.Text ?? string.Empty;
         if (string.IsNullOrWhiteSpace(url))
         {
-            await MessageBoxWindow.ShowAsync(this, "Please paste a YouTube video URL first.", "Error");
+            await MessageBoxWindow.ShowAsync(this, "Please paste a URL first.", "Error");
             return;
         }
 
+        _detectedKind = DownloadUrlKind.IsYouTubeUrl(url) ? DownloadKind.Video : DownloadKind.File;
         SetStage(Stage.Loading);
 
+        if (_detectedKind == DownloadKind.Video)
+            await ResolveVideoAsync(url);
+        else
+            await ResolveFileAsync(url);
+    }
+
+    private async Task ResolveVideoAsync(string url)
+    {
         try
         {
             _resolvedInfo = await _ytDlp!.GetVideoInfoAsync(url);
@@ -102,8 +122,50 @@ public partial class AddDownloadDialog : Window
         }
 
         TxtResolvedTitle.Text = _resolvedInfo.Title;
+        TxtFileMeta.IsVisible = false;
+        PanelVideoOptions.IsVisible = true;
         PopulateResolutions(_resolvedInfo);
         SetStage(Stage.Options);
+    }
+
+    /// <summary>
+    /// Resolves a plain direct-link file via a one-off <see cref="DownloadEngine"/> instance — just
+    /// for this probe; the actual download later goes through <see cref="DownloadQueueService"/>'s
+    /// own shared engine once the item is dequeued, same separation the video path already has
+    /// between resolving here (via <see cref="_ytDlp"/>) and the real download happening elsewhere.
+    /// </summary>
+    private async Task ResolveFileAsync(string url)
+    {
+        DownloadProbe probe;
+        try
+        {
+            using var engine = new DownloadEngine();
+            probe = await engine.ProbeAsync(new Uri(url));
+        }
+        catch (Exception ex)
+        {
+            SetStage(Stage.UrlEntry);
+            await MessageBoxWindow.ShowAsync(this, ex.Message, "Couldn't resolve that file");
+            return;
+        }
+
+        var fileName = probe.FileName ?? DownloadEngine.GetFileNameFromUri(new Uri(url));
+        TxtResolvedTitle.Text = fileName;
+        TxtFileMeta.Text = BuildFileMetaText(probe);
+        TxtFileMeta.IsVisible = true;
+        PanelVideoOptions.IsVisible = false;
+        SetStage(Stage.Options);
+    }
+
+    private static string BuildFileMetaText(DownloadProbe probe)
+    {
+        var parts = new List<string>();
+        if (probe.TotalBytes is > 0)
+            parts.Add(DownloadQueueItem.FormatBytes(probe.TotalBytes.Value));
+        if (!string.IsNullOrEmpty(probe.ContentType))
+            parts.Add(probe.ContentType);
+
+        return parts.Count > 0 ? string.Join("  •  ", parts) : "Size unknown";
     }
 
     /// <summary>
@@ -133,13 +195,23 @@ public partial class AddDownloadDialog : Window
     private async Task AddToQueueAsync()
     {
         var url = TxtUrl.Text ?? string.Empty;
-        var resolutionText = (string)CboResolution.SelectedItem!;
-        var resolution = int.Parse(resolutionText.TrimEnd('p'));
-        var containerFormat = ((ComboBoxItem)CboContainer.SelectedItem!).Content!.ToString()!.ToLowerInvariant();
 
         try
         {
-            await _queue!.EnqueueAsync(url, resolution, title: _resolvedInfo!.Title, containerFormat: containerFormat);
+            if (_detectedKind == DownloadKind.Video)
+            {
+                var resolutionText = (string)CboResolution.SelectedItem!;
+                var resolution = int.Parse(resolutionText.TrimEnd('p'));
+                var containerFormat = ((ComboBoxItem)CboContainer.SelectedItem!).Content!.ToString()!.ToLowerInvariant();
+
+                await _queue!.EnqueueAsync(url, resolution, title: _resolvedInfo!.Title, containerFormat: containerFormat, kind: DownloadKind.Video, infoJson: _resolvedInfo.RawJson);
+            }
+            else
+            {
+                var fileName = TxtResolvedTitle.Text ?? DownloadEngine.GetFileNameFromUri(new Uri(url));
+                await _queue!.EnqueueAsync(url, resolution: 0, title: fileName, kind: DownloadKind.File);
+            }
+
             Close();
         }
         catch (Exception ex)

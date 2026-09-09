@@ -9,8 +9,9 @@ namespace Yoink.Converters;
 
 /// <summary>
 /// Maps a <see cref="DownloadQueueStatus"/> to its semantic brush (see BRANDING.md) for the queue
-/// view's status text: green for a completed download, red for one that didn't make it, muted for
-/// everything still in progress (pending/active/paused).
+/// view's status text: green for a completed download, red for one that didn't make it, amber for
+/// one whose file went missing after the fact (a real download outcome, but distinct from a download
+/// that itself failed), muted for everything still in progress (pending/active/paused).
 /// </summary>
 public class DownloadQueueStatusToBrushConverter : IValueConverter
 {
@@ -25,6 +26,7 @@ public class DownloadQueueStatusToBrushConverter : IValueConverter
         {
             DownloadQueueStatus.Completed => "SuccessBrush",
             DownloadQueueStatus.Failed or DownloadQueueStatus.Canceled => "ErrorBrush",
+            DownloadQueueStatus.Missing => "WarningBrush",
             _ => "TextMutedBrush"
         };
 

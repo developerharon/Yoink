@@ -253,6 +253,9 @@ project root — that's exactly the flat structure this reorg moved away from.
   `title`/`containerFormat` parameters means the background loop's own `if (string.IsNullOrEmpty(item.Title))`
   check (in `ProcessItemAsync`) skips its redundant second metadata fetch entirely, so the actual
   download starts the moment the item is dequeued rather than pausing to look the title up again.
+  `EnqueueAsync`'s `infoJson` parameter goes one step further, passing the same resolve call's
+  `YtDlpVideoInfo.RawJson` through too — see `YtDlpClient.DownloadAsync`'s own notes above for what
+  that actually skips once the item is dequeued.
   Shown via the static `AddDownloadDialog.ShowAsync(owner, queue, ytDlp, prefillUrl)` — now also takes
   the shared `YtDlpClient` instance (`Views.MainWindow`'s own `_ytDlp`, already pointed at whatever
   `DependencyProvisioningService` resolved) so the dialog can resolve videos itself, same pattern as
@@ -356,6 +359,31 @@ project root — that's exactly the flat structure this reorg moved away from.
   size from the first line. `DownloadAsync` also takes a `containerFormat` parameter now (default
   "mp4", passed straight through as `--merge-output-format`) — see `DownloadQueueService`'s notes below
   for where that comes from.
+  - **`--load-info-json` plumbing (avoiding a redundant second extraction)**: `GetVideoInfoAsync`
+    already pays yt-dlp's own process-startup tax (a real ~3s on Linux, confirmed via `strace` — see
+    the yt-dlp-startup-latency project memory) plus a full webpage/player-API/m3u8 extraction once,
+    whenever `Views.AddDownloadDialog` resolves a video to build its resolution/format picker. Before
+    this, `DownloadAsync` still redid that entire extraction from scratch (yt-dlp has no way to know
+    the caller already resolved this exact URL moments earlier) — measured at roughly another 3-6s
+    paid a second time, on top of the first. `YtDlpVideoInfo` now carries
+    `RawJson` (`JsonElement.GetRawText()` on `ParseVideoInfo`'s already-parsed root — reconstructed
+    rather than threaded through separately, so every `GetVideoInfoAsync` caller gets it for free),
+    and `DownloadAsync` takes an optional `infoJson` parameter: when non-null, it's written to a fresh
+    temp file (deleted afterwards, in a `finally`) and passed as `--load-info-json` instead of the
+    bare `url` positional argument (the info file already carries the URL and every resolved format's
+    own URL, so `url` itself isn't needed on that path). Verified for real against the actual sealed
+    `YtDlpClient` class and a real video, not just yt-dlp's CLI directly: resolve+redundant-extract-
+    then-download dropped from ~9.4s to ~6.1-6.5s for a small test video once the second extraction
+    was skipped.
+    - **Staleness**: the format URLs an info-json carries are signed and time-limited, so reusing one
+      is only safe when the download actually starts soon after it was resolved.
+      `DownloadQueueService.ProcessVideoItemAsync` only hands `infoJson` through at all when the item's
+      `CreatedAt` is under `InfoJsonMaxAge` (10 minutes, deliberately generous — see that constant's
+      own doc comment for why the exact value doesn't matter much). As a second backstop independent
+      of that check, `DownloadAsync` itself retries exactly once with a fresh `url` extraction
+      (`infoJson: null`) if the `--load-info-json` attempt's yt-dlp process exits non-zero — a
+      genuinely bad/unavailable video still fails either way, just one attempt later, but a merely
+      expired info-json self-heals instead of failing the whole download outright.
 - `DependencyProvisioningService.cs` — provisions yt-dlp/ffmpeg for a packaged install so a plain
   "download the AppImage/Setup.exe and run it" user never has to separately install (or keep updating)
   either one themselves, added once this became a real problem: this dev environment genuinely had
@@ -411,6 +439,14 @@ project root — that's exactly the flat structure this reorg moved away from.
     table). `BuildDestinationPath` and `YtDlpClient.DownloadAsync` both take a `containerFormat`
     parameter now too (defaulting to "mp4", matching this app's previous hardcoded behavior exactly for
     every pre-existing row and caller that doesn't pass one).
+  - **Reused metadata (`InfoJson`)**: same `EnsureColumnExists` pattern again, a nullable `InfoJson`
+    column carrying `DownloadQueueItem.InfoJson` — see `YtDlpClient.DownloadAsync`'s notes above for
+    the `--load-info-json` mechanism this feeds, and that model property's own doc comment for why
+    it's genuinely single-use. `ProcessVideoItemAsync` reads and clears it (back to `null`, in memory)
+    the moment it decides whether to actually use it — a fixed `InfoJsonMaxAge` (10 minutes) age check
+    against `CreatedAt` — before ever touching the download; the next `PersistAsync` call (already
+    fired on every status transition) writes that `null` back out as a side effect, so a queue that's
+    deliberately never pruned doesn't accumulate one ~500KB+ JSON blob per video row forever.
   - **Concurrency, speed limits, scheduling (README roadmap step 7)**: `ProcessLoopAsync` now runs up to
     `AppSettings.MaxConcurrentDownloads` items at once, using `_activeCancellations.Count` as the live count
     in flight (populated synchronously by `ProcessItemAsync` before its first await, so the loop's capacity
@@ -436,6 +472,34 @@ project root — that's exactly the flat structure this reorg moved away from.
     `SettingsService.GetDefaultDownloadFolder()`'s platform-Downloads-folder guess (see that method's doc
     comment). Both are read fresh from `SettingsService.Load()` inside `ProcessItemAsync`, same as the
     speed-limit settings right below it.
+  - **One-on-one relation between a download file and its queue row**: two related pieces, both added
+    together. First, **no more silent overwrite of a same-named download**: `BuildDestinationPath`/
+    `BuildFileDestinationPath`'s result is no longer used as `item.FilePath` directly — it's a
+    *candidate* handed to `ReserveUniqueDestinationPathAsync`, which appends " (1)", " (2)", ... (same
+    convention as a browser's own download manager) until it finds a path that's both free on disk
+    *and* not already claimed by another row's `FilePath` in `download_queue`, then persists that
+    choice immediately (before any bytes are written) — all inside one `WithLockAsync` acquisition, so
+    two items dequeued concurrently (`MaxConcurrentDownloads` > 1) that resolve to the same title can't
+    both land on the same path. `InsertPathSuffix` is the pure "insert before the extension" half of
+    that, internal for direct testing. Only ever consulted when `item.FilePath` is still null — a
+    retried item already has one from its first attempt and reuses it as-is (see next). Second, **a
+    completed download whose file later disappears** (deleted, or moved elsewhere — this app has no
+    way to tell the two apart, and doesn't need to) is **crossed out as `DownloadQueueStatus.Missing`**
+    rather than going on showing "Completed" for a file that's no longer there:
+    `CheckForMissingFilesAsync` (internal, called unconditionally at the top of every
+    `ProcessLoopAsync` iteration — a `File.Exists` stat() call per `Completed` row is cheap even at
+    queue-history scale, so this needs no dedicated timer/throttle) scans every `Completed` row's
+    `FilePath` and moves any that's gone to `Missing` via `MarkMissingAsync`, with a fixed
+    "File no longer found on disk." `ErrorMessage`. One-way — a row already `Missing` is left alone by
+    later scans. `DownloadQueueItem.CanRetry` now covers `Missing` alongside `Failed`/`Canceled` (same
+    "Retry" button, same `RetryAsync`, no code path changes needed there), and since `FilePath` is
+    still set on a `Missing` row, retrying re-downloads to that exact original path — "download it
+    again if the link is still valid" — rather than going through `ReserveUniqueDestinationPathAsync`
+    and picking up a new suffix. See `Converters.DownloadQueueStatusToBrushConverter` (now `WarningBrush`
+    for `Missing`, distinct from `Failed`/`Canceled`'s `ErrorBrush` — a download that *worked* and later
+    lost its file is a different situation from one that never worked) and the new
+    `Converters.DownloadQueueStatusToTextDecorationsConverter` (strikethrough on the title, in
+    `Views.MainWindow`'s queue row template) for how this actually reads on screen.
 - `ClipboardWatcherService.cs` — the clipboard-monitoring half of the "auto-catch mechanism" from README
   roadmap step 5 (the browser-extension half is not built — see the README roadmap note on why clipboard
   watching came first). Polls the clipboard on a timer (Avalonia's clipboard API has no change event, and
@@ -506,13 +570,20 @@ project root — that's exactly the flat structure this reorg moved away from.
   for the bytes-downloaded/total readout (`DownloadedBytes`/`TotalBytes`, both nullable and never
   persisted — see their own doc comment); `ContainerFormat` (default `"mp4"`) is what
   `Views.AddDownloadDialog`'s MP4/MKV picker sets and `YtDlpClient.DownloadAsync` reads back via
-  `DownloadQueueService`.
+  `DownloadQueueService`. `DownloadQueueStatus.Missing` — a one-way transition off `Completed` when
+  `DownloadQueueService.CheckForMissingFilesAsync` finds the file gone — is a seventh status alongside
+  the original six; see that method's own notes above for the mechanism and `CanRetry`'s doc comment
+  for why it behaves like `Failed`/`Canceled` for retry purposes despite being a distinct status.
 
 ### Converters (`Yoink/Converters/`)
 
-- `DownloadQueueStatusToBrushConverter.cs` — the one `IValueConverter` in the app, mapping
-  `DownloadQueueStatus` to the semantic Success/Error/muted brush (see `BRANDING.md`) for the queue view's
-  status text.
+- `DownloadQueueStatusToBrushConverter.cs` — maps `DownloadQueueStatus` to the semantic Success/Error/
+  Warning/muted brush (see `BRANDING.md`) for the queue view's status text — `WarningBrush` for
+  `Missing` specifically, since a download that worked and later lost its file reads differently from
+  one that never worked (`ErrorBrush`, `Failed`/`Canceled`).
+- `DownloadQueueStatusToTextDecorationsConverter.cs` — the visual half of "cross it out as missing":
+  `TextDecorations.Strikethrough` on the queue row's title for `Missing`, `null` (no decoration) for
+  every other status.
 
 ### Root-level files
 

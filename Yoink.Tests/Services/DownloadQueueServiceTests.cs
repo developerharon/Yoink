@@ -96,6 +96,25 @@ public class DownloadQueueServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task EnqueueAsync_PersistsInfoJson_WhenProvided()
+    {
+        // Views.AddDownloadDialog passes the already-resolved YtDlpVideoInfo.RawJson through
+        // alongside title/containerFormat (see EnqueueAsync's own doc comment) — round-trip it the
+        // same way EnqueueAsync_PersistsAnAlreadyResolvedTitleAndContainerFormat already does for
+        // those two.
+        CloseScheduleWindow();
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+
+        var enqueued = await queue.EnqueueAsync(
+            "https://youtu.be/abc123", 1080, title: "Some Resolved Title", infoJson: """{"id":"abc123"}""");
+
+        Assert.Equal("""{"id":"abc123"}""", enqueued.InfoJson);
+
+        var stored = Assert.Single(await queue.GetAllAsync());
+        Assert.Equal("""{"id":"abc123"}""", stored.InfoJson);
+    }
+
+    [Fact]
     public async Task EnqueueAsync_Rejects_BlankUrl()
     {
         using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
@@ -211,6 +230,142 @@ public class DownloadQueueServiceTests : IDisposable
             () => queue.EnqueueAndWaitAsync("https://youtu.be/abc123", 1080));
 
         Assert.NotNull(ex.Message);
+    }
+
+    /// <summary>
+    /// End-to-end for the generic-file path (README's "general download manager" step): a real
+    /// DownloadQueueService, its real background loop, and a real DownloadEngine downloading from an
+    /// actual local HTTP server (see DownloadEngineTests' RangeSupportingTestServer) — not yt-dlp at
+    /// all. Confirms DownloadKind.File items are routed to ProcessFileItemAsync, resolve a filename
+    /// from the URL when none was pre-resolved, and land the real bytes on disk.
+    /// </summary>
+    [Fact(Timeout = 20_000)]
+    public async Task EnqueueAsync_FileKind_DownloadsARealFile_ViaDownloadEngine()
+    {
+        var content = new byte[512 * 1024];
+        new Random(7).NextBytes(content);
+        using var server = new RangeSupportingTestServer(content);
+
+        var downloadFolder = Path.Combine(_tempDir, "downloads");
+        Directory.CreateDirectory(downloadFolder);
+        SettingsService.Save(new AppSettings { DownloadFolder = downloadFolder });
+
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+
+        var enqueued = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, kind: DownloadKind.File);
+        Assert.Equal(DownloadKind.File, enqueued.Kind);
+
+        var completed = await queue.WaitForCompletionAsync(enqueued.Id);
+
+        Assert.Equal(DownloadQueueStatus.Completed, completed.Status);
+        Assert.Equal("file.bin", completed.Title); // resolved from the URL's own last path segment
+        Assert.NotNull(completed.FilePath);
+        Assert.Equal(content, await File.ReadAllBytesAsync(completed.FilePath!));
+    }
+
+    /// <summary>
+    /// "One-on-one relation between a download file and the download list": a Completed item whose
+    /// file gets deleted (or moved — same observable effect) out from under Yoink is crossed out as
+    /// Missing rather than going on claiming "Completed" for a file that's no longer there. Calls
+    /// CheckForMissingFilesAsync directly (internal for exactly this) instead of waiting out
+    /// ProcessLoopAsync's own real-time cadence.
+    /// </summary>
+    [Fact(Timeout = 20_000)]
+    public async Task CheckForMissingFilesAsync_MarksCompletedItemMissing_WhenFileNoLongerExists()
+    {
+        var content = new byte[1024];
+        new Random(11).NextBytes(content);
+        using var server = new RangeSupportingTestServer(content);
+
+        var downloadFolder = Path.Combine(_tempDir, "downloads");
+        Directory.CreateDirectory(downloadFolder);
+        SettingsService.Save(new AppSettings { DownloadFolder = downloadFolder });
+
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+
+        var enqueued = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, kind: DownloadKind.File);
+        var completed = await queue.WaitForCompletionAsync(enqueued.Id);
+        Assert.Equal(DownloadQueueStatus.Completed, completed.Status);
+
+        File.Delete(completed.FilePath!);
+        await queue.CheckForMissingFilesAsync();
+
+        var stored = (await queue.GetAllAsync()).Single(i => i.Id == enqueued.Id);
+        Assert.Equal(DownloadQueueStatus.Missing, stored.Status);
+        Assert.Equal("File no longer found on disk.", stored.ErrorMessage);
+    }
+
+    /// <summary>
+    /// Retrying a Missing item re-downloads to its exact original FilePath rather than picking up a
+    /// new "(1)" suffix — ReserveUniqueDestinationPathAsync is only ever consulted for an item whose
+    /// FilePath is still null, which a Missing item's (from its original, successful download) isn't.
+    /// </summary>
+    [Fact(Timeout = 20_000)]
+    public async Task RetryAsync_OnAMissingItem_ReDownloadsToTheSameFilePath()
+    {
+        var content = new byte[1024];
+        new Random(13).NextBytes(content);
+        using var server = new RangeSupportingTestServer(content);
+
+        var downloadFolder = Path.Combine(_tempDir, "downloads");
+        Directory.CreateDirectory(downloadFolder);
+        SettingsService.Save(new AppSettings { DownloadFolder = downloadFolder });
+
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+
+        var enqueued = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, kind: DownloadKind.File);
+        var completed = await queue.WaitForCompletionAsync(enqueued.Id);
+        var originalPath = completed.FilePath!;
+
+        File.Delete(originalPath);
+        await queue.CheckForMissingFilesAsync();
+
+        await queue.RetryAsync(enqueued.Id);
+        var redownloaded = await queue.WaitForCompletionAsync(enqueued.Id);
+
+        Assert.Equal(DownloadQueueStatus.Completed, redownloaded.Status);
+        Assert.Equal(originalPath, redownloaded.FilePath);
+        Assert.Equal(content, await File.ReadAllBytesAsync(redownloaded.FilePath!));
+    }
+
+    /// <summary>
+    /// Downloading the same title a second (then third) time gets "(1)"/"(2)" appended instead of
+    /// silently overwriting the first file in place — the browser/OS-file-manager convention for a
+    /// duplicate download. Sequential (not concurrent) so this only exercises
+    /// ReserveUniqueDestinationPathAsync's disk-existence check, not its DB-reservation half (see
+    /// InsertPathSuffixTests for that pure function, and the method's own doc comment for the
+    /// concurrent case this test doesn't cover).
+    /// </summary>
+    [Fact(Timeout = 30_000)]
+    public async Task EnqueueAsync_SameTitleTwiceThenThrice_GetsNumberedSuffixes()
+    {
+        var content = new byte[1024];
+        new Random(17).NextBytes(content);
+        using var server = new RangeSupportingTestServer(content);
+
+        var downloadFolder = Path.Combine(_tempDir, "downloads");
+        Directory.CreateDirectory(downloadFolder);
+        SettingsService.Save(new AppSettings { DownloadFolder = downloadFolder });
+
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+
+        var first = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, title: "duplicate.bin", kind: DownloadKind.File);
+        var firstCompleted = await queue.WaitForCompletionAsync(first.Id);
+
+        var second = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, title: "duplicate.bin", kind: DownloadKind.File);
+        var secondCompleted = await queue.WaitForCompletionAsync(second.Id);
+
+        var third = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, title: "duplicate.bin", kind: DownloadKind.File);
+        var thirdCompleted = await queue.WaitForCompletionAsync(third.Id);
+
+        Assert.Equal(Path.Combine(downloadFolder, "duplicate.bin"), firstCompleted.FilePath);
+        Assert.Equal(Path.Combine(downloadFolder, "duplicate (1).bin"), secondCompleted.FilePath);
+        Assert.Equal(Path.Combine(downloadFolder, "duplicate (2).bin"), thirdCompleted.FilePath);
+
+        // All three actually landed as separate files, not two overwrites of one.
+        Assert.Equal(content, await File.ReadAllBytesAsync(firstCompleted.FilePath!));
+        Assert.Equal(content, await File.ReadAllBytesAsync(secondCompleted.FilePath!));
+        Assert.Equal(content, await File.ReadAllBytesAsync(thirdCompleted.FilePath!));
     }
 
     /// <summary>

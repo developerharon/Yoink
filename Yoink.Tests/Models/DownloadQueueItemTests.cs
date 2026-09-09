@@ -28,6 +28,7 @@ public class DownloadQueueItemTests
     [InlineData(DownloadQueueStatus.Completed, false, false, false, false, true, true, false)]
     [InlineData(DownloadQueueStatus.Failed, false, false, false, true, false, true, false)]
     [InlineData(DownloadQueueStatus.Canceled, false, false, false, true, false, true, false)]
+    [InlineData(DownloadQueueStatus.Missing, false, false, false, true, false, true, false)]
     public void ActionVisibility_MatchesExactlyOneStateMachine(
         DownloadQueueStatus status,
         bool canPause,
@@ -71,6 +72,7 @@ public class DownloadQueueItemTests
     {
         Assert.Equal("Completed", Make(DownloadQueueStatus.Completed).StatusText);
         Assert.Equal("Failed", Make(DownloadQueueStatus.Failed).StatusText);
+        Assert.Equal("Missing", Make(DownloadQueueStatus.Missing).StatusText);
     }
 
     [Fact]
@@ -101,6 +103,18 @@ public class DownloadQueueItemTests
     }
 
     [Fact]
+    public void Subtitle_ShowsErrorMessage_WhenMissingWithOne()
+    {
+        // Missing reuses the same "show the error message instead of the date" Subtitle behavior
+        // Failed already had — see DownloadQueueService.MarkMissingAsync for where this message
+        // actually comes from in production.
+        var item = Make(DownloadQueueStatus.Missing, errorMessage: "File no longer found on disk.");
+
+        Assert.Contains("File no longer found on disk.", item.Subtitle);
+        Assert.StartsWith("1080p", item.Subtitle);
+    }
+
+    [Fact]
     public void Subtitle_ShowsCreatedDate_WhenNotFailed()
     {
         var item = Make(DownloadQueueStatus.Completed, errorMessage: "should be ignored — only Failed shows it");
@@ -108,6 +122,25 @@ public class DownloadQueueItemTests
         Assert.Contains("1080p", item.Subtitle);
         Assert.Contains("2026", item.Subtitle);
         Assert.DoesNotContain("ignored", item.Subtitle);
+    }
+
+    [Fact]
+    public void Subtitle_ShowsFile_NotResolution_ForFileKind()
+    {
+        var item = Make(DownloadQueueStatus.Completed);
+        item.Kind = DownloadKind.File;
+        item.Resolution = 0; // meaningless for File kind, per DownloadQueueItem's own doc comment
+
+        Assert.StartsWith("File", item.Subtitle);
+        Assert.DoesNotContain("0p", item.Subtitle);
+    }
+
+    [Fact]
+    public void Kind_DefaultsToVideo_ForBackwardCompatibility()
+    {
+        // Every row created before DownloadKind existed needs to keep behaving exactly as it did —
+        // the DB migration in DownloadQueueService defaults the new column to "Video" for the same reason.
+        Assert.Equal(DownloadKind.Video, new DownloadQueueItem().Kind);
     }
 
     [Fact]

@@ -144,8 +144,10 @@ for UI text at small sizes, which is most of what this app shows (labels, list r
   right) should use `FASettingsExpander`/`FASettingsExpanderItem` (see `Views.SettingsView`) rather than
   hand-rolled `DockPanel` rows — it's the idiom FluentAvaloniaUI ships for exactly this, and keeps new
   settings visually consistent with the existing ones without re-deriving row spacing/typography by hand.
-- Status text/icons for downloads use the semantic colors above (`SuccessBrush`/`ErrorBrush`), never the
-  accent color — the accent is reserved for actions and progress, not outcomes.
+- Status text/icons for downloads use the semantic colors above (`SuccessBrush`/`ErrorBrush`/
+  `WarningBrush` — the last for a download that completed but whose file later went missing, distinct
+  from one that outright failed), never the accent color — the accent is reserved for actions and
+  progress, not outcomes.
 - Any new accent-colored surface should go through `AccentBrush`/`AccentSoftBrush`/`OnAccentBrush`
   (`DynamicResource`, not `StaticResource` — see `App.ApplyAccent`) so it repaints correctly when the user
   changes their accent preset, rather than a literal hex.

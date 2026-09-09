@@ -55,6 +55,15 @@ public class AppSettings
     public int MaxConcurrentDownloads { get; set; } = 1;
 
     /// <summary>
+    /// How many simultaneous HTTP connections <see cref="Services.DownloadEngine"/> may split one
+    /// generic file download across, when the server supports it (see that class's own doc comment
+    /// for exactly when it does or falls back to one connection). Doesn't apply to yt-dlp/video
+    /// downloads — yt-dlp manages its own connections. Always clamped to at least 1 wherever it's
+    /// read, same as <see cref="MaxConcurrentDownloads"/>.
+    /// </summary>
+    public int MaxConnectionsPerDownload { get; set; } = 4;
+
+    /// <summary>
     /// KB/s cap applied to any single download (yt-dlp's own <c>--limit-rate</c>). Null or ≤0 means
     /// unlimited. If <see cref="GlobalSpeedLimitKBps"/> is also set, the smaller of the two wins —
     /// see <see cref="Services.DownloadQueueService"/> for exactly how they combine.
