@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Yoink",
+  "version": "1.0",
+  "description": "Right-click a link or a page to send it to Yoink for downloading.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAicLJ7/wtzjkw1eQxcdrvdNWW2Ngfm3OuJXTKT/RI//qj63NyXddMLCEDJ1ZGHRY8lI5hfqSj6WzAu4l6Nb/BDPqiF5g9dNVNx2EKr991yIvxprTbBODhr7kaulJdwQS7d3u35eqcWWiezZJdf/kbm37vpme+sYhVXxkESim2sIv2ZxyAkVWMc7HHCE6by7zyd88qTztiLQkNG1drtv2C2GaC14ItQ87OHnbAXq/Ql+7+mLrqN9HFP9ad8LyLdCoGzX3sflPuLPTh2E3ZEemFUTQPwRAZzKdN7l+Xn7ZqagrCbhLeSB9LxP94I8XV8xe0dw7C0i9gfbdqjANmc57w1QIDAQAB",
+  "permissions": ["contextMenus", "nativeMessaging"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "128": "icon-128.png"
+  }
+}

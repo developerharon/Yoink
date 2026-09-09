@@ -71,4 +71,18 @@ public class DownloadUrlKindTests
     [InlineData("https://youtube.com/watch?v=dQw4w9WgXcQ")]
     [InlineData("https://example.com/report.pdf")]
     public void IsTorrentSource_False_ForAnythingElse(string url) => Assert.False(DownloadUrlKind.IsTorrentSource(url));
+
+    [Theory]
+    [InlineData("https://youtube.com/watch?v=dQw4w9WgXcQ")] // YouTube
+    [InlineData("magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a")] // magnet
+    [InlineData("https://example.com/some.torrent")] // .torrent file URL
+    [InlineData("https://example.com/report.pdf")] // downloadable file
+    public void IsRecognizedDownloadUrl_True_ForAnyKnownShape(string url) => Assert.True(DownloadUrlKind.IsRecognizedDownloadUrl(url));
+
+    [Theory]
+    [InlineData("https://example.com/some/page")] // plain webpage, none of the three shapes
+    [InlineData("--url=https://youtube.com/watch?v=dQw4w9WgXcQ")] // a flag, not a bare URL
+    [InlineData("not a url at all")]
+    [InlineData("")]
+    public void IsRecognizedDownloadUrl_False_ForAnythingElse(string url) => Assert.False(DownloadUrlKind.IsRecognizedDownloadUrl(url));
 }
