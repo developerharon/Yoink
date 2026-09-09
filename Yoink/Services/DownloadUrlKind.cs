@@ -35,6 +35,25 @@ public static class DownloadUrlKind
         YouTubeHosts.Contains(uri.Host, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// A <c>magnet:</c> link — checked ahead of <see cref="IsYouTubeUrl"/> in
+    /// <c>Views.AddDownloadDialog</c>'s kind detection, since a magnet URI has no host
+    /// <see cref="Uri.TryCreate(string,UriKind,out Uri)"/> would even parse the same way an http(s)
+    /// URL does.
+    /// </summary>
+    public static bool IsMagnetLink(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        uri.Scheme.Equals("magnet", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A direct http(s) link to a <c>.torrent</c> file — <see cref="Services.TorrentEngine"/> downloads and parses it itself rather than saving the raw .torrent bytes as a generic file.</summary>
+    public static bool IsTorrentFileUrl(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) &&
+        uri.AbsolutePath.EndsWith(".torrent", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Either shape of a torrent source <c>Views.AddDownloadDialog</c> can resolve from a pasted URL — a local <c>.torrent</c> file is a separate, explicit "Browse" action instead, not URL detection.</summary>
+    public static bool IsTorrentSource(string url) => IsMagnetLink(url) || IsTorrentFileUrl(url);
+
+    /// <summary>
     /// True when an http(s) URL's path ends in a well-known downloadable-file extension. Used by
     /// <see cref="ClipboardWatcherService"/> to decide a copied link is worth prompting about — not
     /// by <c>Views.AddDownloadDialog</c>'s own kind detection, which is a plain "YouTube or not"

@@ -38,19 +38,29 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
 `SettingsService.SettingsPath` to a temp file for their duration — safe only one at a time.
 
 - `Models/` — `DownloadQueueItemTests` (every `CanPause`/`CanResume`/etc. computed property across
-  all six `DownloadQueueStatus` values), `AppSettingsTests` (fresh-install defaults, the five
+  all seven `DownloadQueueStatus` values, and `DownloadKind.Torrent`'s `ShowPeers`/`ShowPhase`
+  mutual-exclusivity with `ShowSize`), `AppSettingsTests` (fresh-install defaults, the five
   `AccentColor` presets).
 - `Services/SettingsServiceTests` — save/load round-tripping and the missing-file/corrupt-file
   fallback-to-defaults behavior, against a redirected `SettingsService.SettingsPath` (never the real
   user's actual settings.json).
+- `Services/DownloadUrlKindTests` — every recognized YouTube-host/downloadable-file-extension/
+  magnet-link/`.torrent`-URL shape and their negative cases.
+- `Services/TorrentEngineTests` — just `TryGetMagnetDisplayName` (the one pure, no-network piece —
+  parsing a magnet URI's own `dn=` parameter is plain string/URI parsing); everything else on that
+  class talks to the network/a real swarm, so it isn't covered by the automated suite — see
+  `TorrentEngine.cs`'s own doc comment for how it was instead verified for real.
 - `Services/DownloadQueueScheduleTests` — `DownloadQueueService.IsWithinWindow` (same-day and
   overnight-wrap schedule windows, boundary-inclusive/exclusive edges), `ComputeRateLimitKBps` (every
   combination of per-download/global caps), `BuildFormatSelector`/`BuildDestinationPath`/
-  `ResolveDownloadFolder`, and `SettingsService.GetDefaultDownloadFolder`/`ParseXdgDownloadDir` (the
-  freedesktop.org user-dirs.dirs parsing behind the Linux default-Downloads-folder guess).
+  `BuildFileDestinationPath`/`BuildTorrentDestinationPath`/`ResolveDownloadFolder`, `InsertPathSuffix`
+  (including its `isDirectory` overload — a torrent directory name containing a genuine dot, e.g.
+  "Ubuntu 24.04", must not have that dot misread as a file extension), and
+  `SettingsService.GetDefaultDownloadFolder`/`ParseXdgDownloadDir` (the freedesktop.org
+  user-dirs.dirs parsing behind the Linux default-Downloads-folder guess).
 - `Services/DownloadQueueServiceTests` — real `DownloadQueueService` instances against a temp SQLite
-  file (its constructor already accepts a `databasePath` override, so this needed no production
-  change): Enqueue/GetAll/Reorder/Pause/Resume/Cancel/Retry, plus an end-to-end
+  file (its constructor already accepts `databasePath`/`torrentCacheDirectory` overrides, so this
+  needed no production change): Enqueue/GetAll/Reorder/Pause/Resume/Cancel/Retry, plus an end-to-end
   `EnqueueAndWaitAsync` test that lets the real background loop run against a real `YtDlpClient`
   pointed (via `UseResolvedPaths`) at a path that can't exist, verifying it reaches `Failed` and throws
   rather than hanging. Used to rely on yt-dlp being genuinely absent from PATH in this environment for
@@ -59,10 +69,14 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
   environment-dependent. `YtDlpClient` is sealed with no interface, so it can't be faked otherwise; the
   CRUD-focused tests instead close the schedule window (`SchedulingEnabled=true`,
   `ScheduleStart == ScheduleEnd`, which `IsWithinWindowTests.ZeroWidthWindow_IsNeverWithin` confirms is
-  never "within") so the background loop never dequeues anything mid-test, rather than racing it.
+  never "within") so the background loop never dequeues anything mid-test, rather than racing it. A
+  `DownloadKind.Torrent`-specific test drives `CheckForMissingFilesAsync` against a row updated
+  directly (no real swarm available in a test) to `Completed` with a real directory as `FilePath`,
+  confirming it's *not* misflagged `Missing` the way a naive `File.Exists`-only check would.
 - `Services/ClipboardWatcherServiceTests` — the real background poll loop (given a fast poll interval)
-  against fake clipboard-read/is-enabled delegates: every recognized YouTube URL shape, negative cases,
-  fires-once-per-change, and respects the enabled/disabled delegate.
+  against fake clipboard-read/is-enabled delegates: every recognized YouTube URL/downloadable-file/
+  torrent-source shape, negative cases, fires-once-per-change, and respects the enabled/disabled
+  delegate.
 - `Services/DependencyProvisioningServiceTests` — just `ParseYtDlpVersionFromRedirect` (the one pure/
   isolable piece; everything else on that class talks to the network or spawns processes, so it isn't
   covered by the automated suite — it was instead verified for real, once, in the session that added
@@ -223,6 +237,16 @@ project root — that's exactly the flat structure this reorg moved away from.
     for why every `ItemChanged` payload is safe to treat as a complete replacement.
   - Each row's action buttons read the bound `DownloadQueueItem` off `((Control)sender).DataContext` and
     call straight into `DownloadQueueService` (`PauseAsync`/`ResumeAsync`/`CancelAsync`/`RetryAsync`).
+  - `BtnShowInFolder_Click` treats `FilePath` as a directory when `Directory.Exists(filePath)` is true
+    (opening it directly, on Linux) rather than always taking its parent — the one accommodation for
+    `DownloadKind.Torrent` rows, whose `FilePath` is a directory rather than a file (see
+    `DownloadQueueService.ProcessTorrentItemAsync` above). The Windows/macOS branches (`explorer.exe
+    /select,`/`open -R`) already handle a directory argument correctly without any change, since
+    "select this in its containing folder" works the same for a folder as a file.
+  - The queue row template also shows `PeersText`/`PhaseText` for a `DownloadKind.Torrent` row
+    (seeders/leechers, or "Fetching torrent metadata…" while resolving) in the same spot `SizeText`
+    normally occupies — see `DownloadQueueItem`'s own notes above for why the three are mutually
+    exclusive.
   - "+ Add download" opens `AddDownloadDialog`; the queue view doesn't need anything back from it — the new
     item shows up on its own via `ItemChanged`.
   - A missing `yt-dlp` on PATH is checked once at startup and surfaced via `MessageBoxWindow`.
@@ -263,6 +287,27 @@ project root — that's exactly the flat structure this reorg moved away from.
   caller that passes one, and even then the user still clicks "Continue" themselves (detection and
   action stay separate, as `OnClipboardUrlDetected`'s own doc comment already established — this
   redesign didn't change that).
+  - **Not just YouTube** — a pasted URL now branches three ways, checked in this order:
+    `Services.DownloadUrlKind.IsTorrentSource` (a `magnet:` link, or a direct URL to a `.torrent`
+    file) first, then `IsYouTubeUrl`, else a plain direct-link file (`DownloadEngine.ProbeAsync`,
+    same panel with `PanelVideoOptions` hidden). A local `.torrent` file has no URL/clipboard-text
+    form, so it's a separate `BtnBrowseTorrentFile_Click` action (Avalonia's `IStorageProvider` file
+    picker, same mechanism `Views.SettingsView`'s folder Browse button already uses) rather than
+    something typed into `TxtUrl` — tracked in `_localTorrentFilePath`, cleared back to null the
+    moment the user types into `TxtUrl` instead (`TxtUrl_TextChanged`) so whichever input was touched
+    last wins rather than the two silently fighting over which source gets resolved.
+    `_resolvedSource` (set once, at the top of `ResolveAsync`) is what `AddToQueueAsync` actually
+    enqueues — not a fresh read of `TxtUrl.Text`/`_localTorrentFilePath` — since a local `.torrent`
+    file's path never appears in `TxtUrl` at all.
+  - **Torrent resolve (`ResolveTorrentAsync`)**: a magnet link's real name/size isn't known until its
+    metadata actually resolves — a swarm round trip, not something worth blocking this dialog on the
+    way the other two kinds' resolve steps are (a quick HTTP call either way) — so this deliberately
+    does *not* try to connect to anything for one: `TorrentEngine.TryGetMagnetDisplayName` (the magnet
+    URI's own `dn=` parameter, if it has one) is the best available name up front, and the caption
+    says plainly that peer count/size resolve once the download actually starts. A local/remote
+    `.torrent` file, by contrast, already has its full contents on hand (or one quick download away)
+    with no swarm involved, so it resolves fully here (name, total size, file count) via
+    `TorrentEngine.LoadTorrentAsync`, same as the generic-file path.
 - `UpdatePromptDialog.axaml` / `.axaml.cs` — the update/distribution story's UI half (see `UpdateService`
   below for the mechanism). Shows the new version + release notes with "Install Update"/"Later" buttons;
   clicking "Install Update" downloads (progress bar, reusing the same pattern as everywhere else) then
@@ -384,6 +429,49 @@ project root — that's exactly the flat structure this reorg moved away from.
       (`infoJson: null`) if the `--load-info-json` attempt's yt-dlp process exits non-zero — a
       genuinely bad/unavailable video still fails either way, just one attempt later, but a merely
       expired info-json self-heals instead of failing the whole download outright.
+- `TorrentEngine.cs` — the peer-to-peer download engine: wraps
+  [MonoTorrent](https://github.com/alanmcgovern/monotorrent) (MIT-licensed NuGet package) the same
+  "delegate to a maintained library rather than reimplement the protocol" reasoning `YtDlpClient`
+  already gives for yt-dlp — reimplementing bencode parsing, DHT, PEX, and the peer wire protocol
+  ourselves would be a huge, fragile undertaking for zero benefit over an actively-maintained library.
+  Exact API (property/type names, enum values, and notably that `TorrentManager.Progress` is a 0-100
+  percentage, not a 0-1 fraction) was verified via reflection against the actual installed 3.0.2
+  package rather than trusted from docs, the same "confirmed, not assumed" standard this file already
+  holds Velopack/FluentAvaloniaUI to (see those sections below). One shared `ClientEngine` (owned by
+  this class, one per `DownloadQueueService`) hosts every concurrently-active torrent rather than
+  standing up a fresh one per download — DHT and fast-resume are both on by
+  `EngineSettingsBuilder`'s own defaults (also confirmed by reflection); this class only overrides
+  `CacheDirectory`, pointed at `%AppData%/Yoink/torrents` rather than the library's own default
+  relative folder next to the executable.
+  - **Source formats**: `DownloadAsync`'s `source` parameter accepts a `magnet:` link, a direct
+    http(s) URL to a `.torrent` file (downloaded and parsed via the static `LoadTorrentAsync` before
+    being added to the engine), or a local filesystem path to one — `Services.DownloadUrlKind`/
+    `Views.AddDownloadDialog` decide which a given URL/path actually is (see `DownloadQueueService`'s
+    own torrent notes above). `LoadTorrentAsync` is static and takes its own short-lived `HttpClient`
+    when none is supplied, specifically so `Views.AddDownloadDialog`'s resolve-then-confirm step can
+    call it directly without standing up a whole second `ClientEngine` (listen port, DHT node, etc.)
+    just to parse a `.torrent` file's bytes, which needs none of that.
+  - **"End everything" — no seeding after a download finishes**, per the user's own explicit product
+    decision when this feature was designed (a magnet link's real-world convention is a `dn=`
+    provisional name; a completed download here truly stops rather than continuing to seed like a
+    dedicated torrent client would): every `DownloadAsync` call, on success, cancellation, or failure
+    alike, ends in the same `finally` block calling `TorrentManager.StopAsync()` (closes every peer
+    connection, sends trackers a "stopped" announce) followed by `ClientEngine.RemoveAsync` —
+    `RemoveMode.CacheDataOnly` (drop fast-resume/metadata cache, keep the downloaded file) if the
+    download actually completed, `RemoveMode.KeepAllData` (keep the cache too, so a paused/canceled
+    item's next attempt resumes from it) otherwise. There's a small, unavoidable window — at most one
+    polling tick (`PollInterval`, 500ms) — between MonoTorrent itself marking a torrent `Seeding`
+    internally and this loop noticing `TorrentManager.Complete` and reacting; genuinely instantaneous
+    cutoff isn't something MonoTorrent's public API exposes a hook for. **Verified for real**, not just
+    unit-tested (`TorrentManager`/`ClientEngine`'s own network/process-driven surface isn't covered by
+    the automated suite, same reasoning as `YtDlpClient`'s/`DependencyProvisioningService`'s — see
+    `Yoink.Tests`' own notes below): a real download of a well-known public-domain test torrent (Big
+    Buck Bunny, Blender Foundation, CC-BY) against the real network and real peers/trackers/DHT in this
+    session — real seeder/leecher counts and progress throughout, a multi-file torrent laid out
+    directly in the given save directory with no unwanted extra nesting (confirming
+    `TorrentSettingsBuilder.CreateContainingDirectory = false` behaves as intended), reaching exactly
+    100% with the final file's size matching precisely, and the "hard stop" `finally` cleanup running
+    to completion with no hang or exception.
 - `DependencyProvisioningService.cs` — provisions yt-dlp/ffmpeg for a packaged install so a plain
   "download the AppImage/Setup.exe and run it" user never has to separately install (or keep updating)
   either one themselves, added once this became a real problem: this dev environment genuinely had
@@ -500,6 +588,38 @@ project root — that's exactly the flat structure this reorg moved away from.
     lost its file is a different situation from one that never worked) and the new
     `Converters.DownloadQueueStatusToTextDecorationsConverter` (strikethrough on the title, in
     `Views.MainWindow`'s queue row template) for how this actually reads on screen.
+  - **Generic file downloads (`DownloadKind.File`)**: `ProcessFileItemAsync`, a third branch alongside
+    `ProcessVideoItemAsync` (`ProcessItemAsync` switches on `item.Kind`), for a plain direct-link URL —
+    `Services.DownloadUrlKind.IsYouTubeUrl` is what `Views.AddDownloadDialog` uses to route a pasted
+    URL to one or the other. Goes through the shared `_downloadEngine` (a `Services.DownloadEngine`
+    instance owned by this class, same "one shared instance for the queue's whole lifetime" reasoning
+    as `_torrentEngine` below) rather than yt-dlp; `Title` doubles as the already-probed filename the
+    same way it doubles as an already-resolved video title, and `BuildFileDestinationPath` keeps
+    whatever extension that filename already has rather than appending one the way `BuildDestinationPath`
+    does for a video.
+  - **Torrent downloads (`DownloadKind.Torrent`)**: `ProcessTorrentItemAsync`, the third branch, via
+    the shared `_torrentEngine` (a `Services.TorrentEngine` instance — see that class below for the
+    MonoTorrent wrapper itself and its "no seeding once a download finishes" policy).
+    `Services.DownloadUrlKind.IsTorrentSource` (checked ahead of `IsYouTubeUrl` in
+    `Views.AddDownloadDialog`) recognizes a `magnet:` link or a direct URL to a `.torrent` file; a
+    local `.torrent` file (no URL/clipboard-text form to detect) is a separate "Browse" action in that
+    same dialog. `item.Url` carries whichever of the three source shapes was actually used —
+    `TorrentEngine` figures out which at download time. Unlike the video/file paths, `item.FilePath`
+    here is a **directory**, not a file: MonoTorrent lays a torrent's file(s) out inside whatever
+    folder it's told to save into, so `BuildTorrentDestinationPath`/`ReserveUniqueDestinationPathAsync`'s
+    `isDirectory: true` overload reserves a unique *directory* (via `Directory.Exists`, not
+    `File.Exists` — the latter always returns false for an actual directory, which is exactly the same
+    trap `CheckForMissingFilesAsync` below had to be fixed for) rather than a unique file. A magnet
+    link's real name/size isn't known until its metadata actually resolves (a swarm round trip), so
+    `TorrentEngine.TryGetMagnetDisplayName` (the magnet URI's own `dn=` parameter, no network needed)
+    is only ever a *provisional* title/folder name for one; the progress callback swaps
+    `item.Title` for the real resolved name (`TorrentDownloadProgress.ResolvedName`) the moment
+    metadata arrives, but deliberately leaves the already-reserved `FilePath` alone rather than trying
+    to rename a directory MonoTorrent may already be writing into. `CheckForMissingFilesAsync`'s
+    `File.Exists`-only check would have misfired on every single completed torrent (a directory isn't
+    a file) — now checks `Directory.Exists` too — and `DeleteAsync`'s `deleteFile: true` path now uses
+    `Directory.Delete(recursive: true)` for the same reason, or "delete file and remove" would have
+    silently left every downloaded torrent's folder behind.
 - `ClipboardWatcherService.cs` — the clipboard-monitoring half of the "auto-catch mechanism" from README
   roadmap step 5 (the browser-extension half is not built — see the README roadmap note on why clipboard
   watching came first). Polls the clipboard on a timer (Avalonia's clipboard API has no change event, and
@@ -561,7 +681,7 @@ project root — that's exactly the flat structure this reorg moved away from.
   a managed yt-dlp/ffmpeg copy — not surfaced in `Views.SettingsView` (there's nothing for a user to
   configure here, unlike everything else in this class), just internal bookkeeping so it only
   re-downloads a managed copy when the upstream build has actually moved on.
-- `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus`. Plain data, no
+- `DownloadQueueItem.cs` — `DownloadQueueItem` + `DownloadQueueStatus` + `DownloadKind`. Plain data, no
   `INotifyPropertyChanged` — see the `Views.MainWindow`/`DownloadQueueService` notes above for how the
   queue view stays live without it. Carries presentational computed properties
   (`DisplayTitle`/`Subtitle`/`StatusText`/`ProgressPercent`/`CanPause`/etc.) so the queue view's
@@ -574,6 +694,19 @@ project root — that's exactly the flat structure this reorg moved away from.
   `DownloadQueueService.CheckForMissingFilesAsync` finds the file gone — is a seventh status alongside
   the original six; see that method's own notes above for the mechanism and `CanRetry`'s doc comment
   for why it behaves like `Failed`/`Canceled` for retry purposes despite being a distinct status.
+  `DownloadKind` (`Video`/`File`/`Torrent`) is what `DownloadQueueService.ProcessItemAsync` switches
+  on to decide which downloader a row actually goes through — `Video` (yt-dlp) is the original, sole
+  behavior every pre-existing row defaults to; `File` is a plain direct-link download (PDF, .exe,
+  .deb, ...) via `Services.DownloadEngine`, where `Resolution`/`ContainerFormat` are meaningless;
+  `Torrent` is a peer-to-peer download via `Services.TorrentEngine` (see that class and
+  `DownloadQueueService.ProcessTorrentItemAsync` below), where `FilePath` is a *directory* rather than
+  a file — the one exception to every other kind's own "`FilePath` is the downloaded file itself"
+  rule; see `Views.MainWindow.BtnShowInFolder_Click` for the one place that distinction actually
+  matters. `SeederCount`/`LeecherCount`/`PhaseText` are `Torrent`-only, live-only fields (same
+  never-persisted reasoning as `DownloadedBytes`/`TotalBytes`) driving `ShowPeers`/`PeersText` and
+  `ShowPhase` in the queue row — `PhaseText` ("Fetching torrent metadata…", "Checking existing
+  files…") and `ShowSize`/`ShowPeers` are mutually exclusive (all three bind to the same spot in the
+  row) so a torrent never shows two overlapping captions during the same tick.
 
 ### Converters (`Yoink/Converters/`)
 
@@ -620,6 +753,20 @@ no longer find muxed streams for most videos at all). `yt-dlp` is maintained spe
 changes, which per the README roadmap is far less maintenance than reimplementing the same cat-and-mouse
 game here — the same reasoning is why `DependencyProvisioningService` re-downloads the latest yt-dlp build
 periodically rather than pinning one: a stale copy would go back to being exactly this problem.
+
+### Key dependency: MonoTorrent (NuGet package)
+
+[MonoTorrent](https://github.com/alanmcgovern/monotorrent) (MIT-licensed) is the BitTorrent
+protocol implementation behind `Services/TorrentEngine.cs` — bencode/`.torrent`/magnet-link parsing,
+DHT, peer exchange, trackers, and the peer wire protocol itself, all handled by the library rather
+than reimplemented here, same "far less maintenance" reasoning as yt-dlp above. Referenced directly
+as a NuGet package (`MonoTorrent`, currently pinned to `3.0.2`) rather than shelled out to like
+yt-dlp/ffmpeg — unlike those two, it's a managed .NET library with no separate binary to provision.
+Its exact API (see `TorrentEngine.cs`'s own doc comment) was verified in this session via reflection
+against the actual installed package rather than trusted from docs, the same standard this file
+already holds Velopack/FluentAvaloniaUI to below — worth re-verifying the same way before making
+further changes here rather than assuming docs/comments are exactly right, especially for anything
+version-sensitive (property defaults, enum semantics).
 
 ### Key dependency: Velopack (NuGet package + `vpk` CLI tool)
 

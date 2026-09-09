@@ -439,7 +439,11 @@ public partial class MainWindow : Window
         if (sender is not Control { DataContext: DownloadQueueItem { FilePath: { } filePath } } || string.IsNullOrWhiteSpace(filePath))
             return;
 
-        var directory = Path.GetDirectoryName(filePath);
+        // A DownloadKind.Torrent row's FilePath is itself a directory (see
+        // DownloadQueueService.ProcessTorrentItemAsync's doc comment) — MonoTorrent lays its file(s)
+        // out inside it, so "show in folder" should open that directory directly rather than its
+        // parent, unlike a video/file row where FilePath is the downloaded file itself.
+        var directory = Directory.Exists(filePath) ? filePath : Path.GetDirectoryName(filePath);
         if (directory is null)
             return;
 

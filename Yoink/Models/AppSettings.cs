@@ -58,24 +58,30 @@ public class AppSettings
     /// How many simultaneous HTTP connections <see cref="Services.DownloadEngine"/> may split one
     /// generic file download across, when the server supports it (see that class's own doc comment
     /// for exactly when it does or falls back to one connection). Doesn't apply to yt-dlp/video
-    /// downloads — yt-dlp manages its own connections. Always clamped to at least 1 wherever it's
-    /// read, same as <see cref="MaxConcurrentDownloads"/>.
+    /// downloads — yt-dlp manages its own connections — or to a <see cref="Services.TorrentEngine"/>
+    /// download, whose "how many connections" is really "how many peers", an entirely different
+    /// concept MonoTorrent manages itself via its own swarm/choking logic, not something this app
+    /// caps. Always clamped to at least 1 wherever it's read, same as <see cref="MaxConcurrentDownloads"/>.
     /// </summary>
     public int MaxConnectionsPerDownload { get; set; } = 4;
 
     /// <summary>
-    /// KB/s cap applied to any single download (yt-dlp's own <c>--limit-rate</c>). Null or ≤0 means
-    /// unlimited. If <see cref="GlobalSpeedLimitKBps"/> is also set, the smaller of the two wins —
-    /// see <see cref="Services.DownloadQueueService"/> for exactly how they combine.
+    /// KB/s cap applied to any single download — yt-dlp's own <c>--limit-rate</c> for a video,
+    /// <see cref="Services.DownloadEngine"/>'s own rate limiter for a file, or MonoTorrent's
+    /// <c>TorrentSettingsBuilder.MaximumDownloadRate</c> for a torrent, all fed the same computed
+    /// value (see <see cref="Services.DownloadQueueService.ComputeRateLimitKBps"/>).
+    /// Null or ≤0 means unlimited. If <see cref="GlobalSpeedLimitKBps"/> is also set, the smaller of
+    /// the two wins.
     /// </summary>
     public int? PerDownloadSpeedLimitKBps { get; set; }
 
     /// <summary>
     /// KB/s cap meant to apply across every concurrently-active download combined. In practice it's
     /// split evenly by <see cref="MaxConcurrentDownloads"/> and applied to each download as it
-    /// starts (yt-dlp's <c>--limit-rate</c> is set once at process launch and can't be adjusted
-    /// while it's running, so this is a static split rather than a live rebalance across however
-    /// many downloads happen to be active at a given moment). Null or ≤0 means unlimited.
+    /// starts (each of the three downloaders above sets its own rate limit once, at the start of
+    /// that download, and none of them can be adjusted while running, so this is a static split
+    /// rather than a live rebalance across however many downloads happen to be active at a given
+    /// moment). Null or ≤0 means unlimited.
     /// </summary>
     public int? GlobalSpeedLimitKBps { get; set; }
 

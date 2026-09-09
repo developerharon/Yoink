@@ -10,8 +10,12 @@ namespace Yoink.Services;
 /// clipboard on a timer — Avalonia's clipboard API has no "changed" event, and there's no
 /// OS-agnostic native one to hook either, so polling is the standard approach here — and raises
 /// <see cref="UrlDetected"/> when the clipboard's text changes to something that looks like a
-/// YouTube URL or a direct link to a known downloadable-file type (see
-/// <see cref="DownloadUrlKind.LooksLikeDownloadableFile"/> for exactly which extensions).
+/// YouTube URL, a direct link to a known downloadable-file type (see
+/// <see cref="DownloadUrlKind.LooksLikeDownloadableFile"/> for exactly which extensions), or a
+/// torrent source (a <c>magnet:</c> link, or a direct link to a <c>.torrent</c> file — see
+/// <see cref="DownloadUrlKind.IsTorrentSource"/>). A magnet link is exactly the kind of thing that
+/// gets copied to a clipboard (unlike a local <c>.torrent</c> file, which has no clipboard-text form
+/// and stays a "Browse" action in <c>Views.AddDownloadDialog</c>).
 ///
 /// Deliberately does not download anything itself: it only detects and reports. The caller (
 /// <c>Views.MainWindow</c>) decides what to do with a detected URL — prompting before queuing
@@ -72,7 +76,7 @@ public sealed class ClipboardWatcherService : IDisposable
                         _lastSeenText = text;
 
                         var trimmed = text.Trim();
-                        if (YouTubeUrlPattern.IsMatch(trimmed) || DownloadUrlKind.LooksLikeDownloadableFile(trimmed))
+                        if (YouTubeUrlPattern.IsMatch(trimmed) || DownloadUrlKind.LooksLikeDownloadableFile(trimmed) || DownloadUrlKind.IsTorrentSource(trimmed))
                             UrlDetected?.Invoke(trimmed);
                     }
                 }

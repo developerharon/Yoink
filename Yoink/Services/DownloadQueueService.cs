@@ -43,6 +43,20 @@ public sealed class DownloadQueueService : IDisposable
     /// </summary>
     private readonly DownloadEngine _downloadEngine = new();
 
+    /// <summary>
+    /// Same "one shared instance, matches the queue's own lifetime" reasoning as
+    /// <see cref="_downloadEngine"/> above — every <see cref="DownloadKind.Torrent"/> item shares one
+    /// <see cref="Services.TorrentEngine"/> (and so one underlying MonoTorrent <c>ClientEngine</c>,
+    /// listen port, and DHT node) rather than standing up a new one per item. Cache directory lives
+    /// alongside the managed yt-dlp/ffmpeg folder <c>DependencyProvisioningService</c> already uses —
+    /// same <c>%AppData%/Yoink/</c> root, its own subfolder — unless overridden by the constructor's
+    /// own <c>torrentCacheDirectory</c> parameter, the same kind of override the constructor's
+    /// <c>databasePath</c> parameter already has, and for the same reason: so Yoink.Tests never
+    /// touches the real user's config directory (this class's constructor eagerly
+    /// <see cref="Directory.CreateDirectory(string)"/>s it).
+    /// </summary>
+    private readonly TorrentEngine _torrentEngine;
+
     private readonly SqliteConnection _connection;
 
     // SQLite only ever allows one writer at a time regardless of how many connections you open —
@@ -65,9 +79,11 @@ public sealed class DownloadQueueService : IDisposable
     private readonly ConcurrentDictionary<long, TaskCompletionSource<DownloadQueueItem>> _waiters = new();
     private readonly Task _processingLoop;
 
-    public DownloadQueueService(YtDlpClient ytDlp, string? databasePath = null)
+    public DownloadQueueService(YtDlpClient ytDlp, string? databasePath = null, string? torrentCacheDirectory = null)
     {
         _ytDlp = ytDlp;
+        _torrentEngine = new TorrentEngine(torrentCacheDirectory ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Yoink", "torrents"));
 
         var path = databasePath ?? DatabasePath;
         var directory = Path.GetDirectoryName(path);
@@ -301,7 +317,13 @@ public sealed class DownloadQueueService : IDisposable
         {
             try
             {
-                if (File.Exists(filePath))
+                // A DownloadKind.Torrent row's FilePath is a directory, not a file (see
+                // ProcessTorrentItemAsync's own doc comment) — File.Delete throws on one, so this
+                // needs Directory.Delete instead, or "delete file and remove" would silently leave
+                // every downloaded torrent's folder behind (the catch below swallows exactly that).
+                if (Directory.Exists(filePath))
+                    Directory.Delete(filePath, recursive: true);
+                else if (File.Exists(filePath))
                     File.Delete(filePath);
             }
             catch
@@ -430,10 +452,18 @@ public sealed class DownloadQueueService : IDisposable
             var settings = SettingsService.Load();
             var rateLimitKBps = ComputeRateLimitKBps(settings);
 
-            if (item.Kind == DownloadKind.Video)
-                await ProcessVideoItemAsync(item, settings, rateLimitKBps, itemCts.Token).ConfigureAwait(false);
-            else
-                await ProcessFileItemAsync(item, settings, rateLimitKBps, itemCts.Token).ConfigureAwait(false);
+            switch (item.Kind)
+            {
+                case DownloadKind.Video:
+                    await ProcessVideoItemAsync(item, settings, rateLimitKBps, itemCts.Token).ConfigureAwait(false);
+                    break;
+                case DownloadKind.Torrent:
+                    await ProcessTorrentItemAsync(item, settings, rateLimitKBps, itemCts.Token).ConfigureAwait(false);
+                    break;
+                default:
+                    await ProcessFileItemAsync(item, settings, rateLimitKBps, itemCts.Token).ConfigureAwait(false);
+                    break;
+            }
 
             item.Status = DownloadQueueStatus.Completed;
             item.Progress = 1.0;
@@ -576,6 +606,67 @@ public sealed class DownloadQueueService : IDisposable
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The peer-to-peer path via <see cref="TorrentEngine"/>. Unlike the video/file paths above,
+    /// <see cref="DownloadQueueItem.FilePath"/> here is a <i>directory</i>, not a file — reserved
+    /// uniquely the same way (see <see cref="ReserveUniqueDestinationPathAsync"/>'s <c>isDirectory</c>
+    /// parameter) so two torrents that happen to share a name don't collide, and MonoTorrent lays out
+    /// the torrent's own file(s) inside it (see <see cref="TorrentEngine.DownloadAsync"/>'s own doc
+    /// comment for why <see cref="Views.MainWindow.BtnShowInFolder_Click"/> needs to know this).
+    ///
+    /// A magnet link's real name/size isn't known until its metadata actually resolves (a swarm round
+    /// trip, not instant the way a local/remote <c>.torrent</c> file's contents are — see
+    /// <c>Views.AddDownloadDialog</c>'s own notes), so <see cref="TorrentEngine.TryGetMagnetDisplayName"/>
+    /// (read straight from the magnet URI's own <c>dn=</c> parameter, no network needed) is only ever
+    /// a *provisional* title/destination-folder name for one — <see cref="TorrentDownloadProgress.PhaseText"/>
+    /// updates <see cref="DownloadQueueItem.Title"/> to the real resolved name once metadata arrives,
+    /// but deliberately leaves <see cref="DownloadQueueItem.FilePath"/> (already reserved, and
+    /// possibly already being written to by MonoTorrent) alone rather than trying to rename a
+    /// directory out from under an in-progress download for what's ultimately just a cosmetic
+    /// mismatch.
+    /// </summary>
+    private async Task ProcessTorrentItemAsync(DownloadQueueItem item, AppSettings settings, int? rateLimitKBps, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(item.Title))
+        {
+            item.Title = DownloadUrlKind.IsMagnetLink(item.Url)
+                ? TorrentEngine.TryGetMagnetDisplayName(item.Url) ?? "Torrent"
+                : (await TorrentEngine.LoadTorrentAsync(item.Url, cancellationToken: cancellationToken).ConfigureAwait(false)).Name;
+        }
+
+        if (item.FilePath is null)
+        {
+            var candidatePath = BuildTorrentDestinationPath(item.Title, ResolveDownloadFolder(settings));
+            item.FilePath = await ReserveUniqueDestinationPathAsync(item.Id, candidatePath, cancellationToken, isDirectory: true).ConfigureAwait(false);
+        }
+
+        var progress = new Progress<TorrentDownloadProgress>(p =>
+        {
+            item.Progress = p.Fraction;
+            item.DownloadedBytes = p.BytesDownloaded;
+            item.TotalBytes = p.TotalBytes;
+            item.SeederCount = p.SeederCount;
+            item.LeecherCount = p.LeecherCount;
+            item.PhaseText = p.PhaseText;
+
+            // A magnet link's provisional title (see this method's own doc comment) only ever came
+            // from the URI's own dn= parameter, never from real metadata — swap in the torrent's
+            // actual name the moment it's known. Harmless to keep re-assigning the same value for a
+            // .torrent-file item, whose title was already the real name from the start.
+            if (!string.IsNullOrEmpty(p.ResolvedName))
+                item.Title = p.ResolvedName;
+
+            RaiseChanged(item);
+        });
+
+        await _torrentEngine.DownloadAsync(
+            item.Url,
+            item.FilePath,
+            rateLimitKBps: rateLimitKBps,
+            progress: progress,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
     private void CompleteWaiter(DownloadQueueItem item)
     {
         if (_waiters.TryRemove(item.Id, out var tcs))
@@ -602,6 +693,19 @@ public sealed class DownloadQueueService : IDisposable
     {
         var sanitized = string.Concat(fileName.Split(Path.GetInvalidFileNameChars()));
         return Path.Combine(downloadFolder, string.IsNullOrWhiteSpace(sanitized) ? "download" : sanitized);
+    }
+
+    /// <summary>
+    /// Same idea again for a <see cref="DownloadKind.Torrent"/> item, except the result is a
+    /// directory (see <see cref="ProcessTorrentItemAsync"/>'s own doc comment for why), not a file —
+    /// no extension involved, and <see cref="ReserveUniqueDestinationPathAsync"/> is called with
+    /// <c>isDirectory: true</c> for this one so its collision check uses
+    /// <see cref="Directory.Exists(string)"/> rather than <see cref="File.Exists(string)"/>.
+    /// </summary>
+    internal static string BuildTorrentDestinationPath(string torrentName, string downloadFolder)
+    {
+        var sanitized = string.Concat(torrentName.Split(Path.GetInvalidFileNameChars()));
+        return Path.Combine(downloadFolder, string.IsNullOrWhiteSpace(sanitized) ? "torrent" : sanitized);
     }
 
     /// <summary>
@@ -658,7 +762,13 @@ public sealed class DownloadQueueService : IDisposable
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                if (!File.Exists(reader.GetString(1)))
+                // File.Exists alone would misfire for every single completed DownloadKind.Torrent
+                // row — its FilePath is a directory (see ProcessTorrentItemAsync's own doc comment),
+                // and File.Exists always returns false for a path that's actually a directory, even
+                // one that's very much still there. Directory.Exists covers that case; a genuinely
+                // deleted/moved file or folder still correctly fails both checks.
+                var path = reader.GetString(1);
+                if (!File.Exists(path) && !Directory.Exists(path))
                     missing.Add(reader.GetInt64(0));
             }
 
@@ -706,13 +816,20 @@ public sealed class DownloadQueueService : IDisposable
     /// disk (which wouldn't happen until well after this method returns).
     ///
     /// Only ever called for an item whose <see cref="DownloadQueueItem.FilePath"/> is still null —
-    /// see <see cref="ProcessVideoItemAsync"/>/<see cref="ProcessFileItemAsync"/>. A retried
-    /// <see cref="DownloadQueueStatus.Failed"/>/<see cref="DownloadQueueStatus.Canceled"/>/
+    /// see <see cref="ProcessVideoItemAsync"/>/<see cref="ProcessFileItemAsync"/>/<see cref="ProcessTorrentItemAsync"/>.
+    /// A retried <see cref="DownloadQueueStatus.Failed"/>/<see cref="DownloadQueueStatus.Canceled"/>/
     /// <see cref="DownloadQueueStatus.Missing"/> item already has one from its first attempt and
     /// deliberately reuses it as-is instead of coming back through here, so retrying re-downloads to
     /// the exact same place rather than picking up a new "(1)" suffix.
     /// </summary>
-    private Task<string> ReserveUniqueDestinationPathAsync(long itemId, string candidatePath, CancellationToken cancellationToken) =>
+    /// <param name="isDirectory">
+    /// True for a <see cref="ProcessTorrentItemAsync"/> caller, whose <paramref name="candidatePath"/>
+    /// is a directory MonoTorrent lays files out inside rather than a single file — checked via
+    /// <see cref="Directory.Exists(string)"/> instead of <see cref="File.Exists(string)"/>, since the
+    /// latter always returns false for a path that's actually a directory and so would never detect a
+    /// real collision on this path.
+    /// </param>
+    private Task<string> ReserveUniqueDestinationPathAsync(long itemId, string candidatePath, CancellationToken cancellationToken, bool isDirectory = false) =>
         WithLockAsync(async () =>
         {
             var claimed = new HashSet<string>(StringComparer.Ordinal);
@@ -727,10 +844,10 @@ public sealed class DownloadQueueService : IDisposable
 
             var suffix = 0;
             var chosen = candidatePath;
-            while (claimed.Contains(chosen) || File.Exists(chosen))
+            while (claimed.Contains(chosen) || (isDirectory ? Directory.Exists(chosen) : File.Exists(chosen)))
             {
                 suffix++;
-                chosen = InsertPathSuffix(candidatePath, suffix);
+                chosen = InsertPathSuffix(candidatePath, suffix, isDirectory);
             }
 
             await using (var command = _connection.CreateCommand())
@@ -750,12 +867,22 @@ public sealed class DownloadQueueService : IDisposable
     /// <paramref name="suffix"/> of 0 (or less) returns <paramref name="path"/> unchanged. Internal
     /// (not private) so Yoink.Tests can exercise it directly.
     /// </summary>
-    internal static string InsertPathSuffix(string path, int suffix)
+    /// <param name="isDirectory">
+    /// True for a torrent's directory candidate — skips the file-extension split entirely (the whole
+    /// final path segment is the "stem"), since <see cref="Path.GetExtension(string)"/>/
+    /// <see cref="Path.GetFileNameWithoutExtension(string)"/> would otherwise misread a genuine dot in
+    /// a directory name (e.g. "Ubuntu 24.04") as a file extension and suffix in the wrong place —
+    /// "Ubuntu 24 (1).04" instead of the intended "Ubuntu 24.04 (1)".
+    /// </param>
+    internal static string InsertPathSuffix(string path, int suffix, bool isDirectory = false)
     {
         if (suffix <= 0)
             return path;
 
         var directory = Path.GetDirectoryName(path) ?? string.Empty;
+        if (isDirectory)
+            return Path.Combine(directory, $"{Path.GetFileName(path)} ({suffix})");
+
         var stem = Path.GetFileNameWithoutExtension(path);
         var extension = Path.GetExtension(path);
         return Path.Combine(directory, $"{stem} ({suffix}){extension}");
@@ -1006,5 +1133,6 @@ public sealed class DownloadQueueService : IDisposable
         _dbLock.Dispose();
         _connection.Dispose();
         _downloadEngine.Dispose();
+        _torrentEngine.Dispose();
     }
 }

@@ -40,12 +40,17 @@ public enum DownloadQueueStatus
 /// <c>EnsureColumnExists</c> migration pattern <c>ContainerFormat</c> already used. <see cref="File"/>
 /// is a plain direct-link download (PDF, .exe, .deb, ...) via <see cref="Services.DownloadEngine"/> —
 /// <see cref="Resolution"/>/<see cref="ContainerFormat"/> don't mean anything for one of these; see
-/// each property's own doc comment for what a File-kind row uses instead.
+/// each property's own doc comment for what a File-kind row uses instead. <see cref="Torrent"/> is a
+/// peer-to-peer download via <see cref="Services.TorrentEngine"/> — <see cref="Url"/> holds either a
+/// <c>magnet:</c> link, a direct URL to a <c>.torrent</c> file, or a local filesystem path to one
+/// (see <c>Views.AddDownloadDialog</c>'s "Browse" option); see <see cref="SeederCount"/>/
+/// <see cref="LeecherCount"/>/<see cref="PhaseText"/> for what's specific to this kind.
 /// </summary>
 public enum DownloadKind
 {
     Video,
-    File
+    File,
+    Torrent
 }
 
 /// <summary>
@@ -122,12 +127,38 @@ public sealed class DownloadQueueItem
 
     public long? TotalBytes { get; set; }
 
+    /// <summary>
+    /// How many seeders/leechers <see cref="Services.TorrentEngine"/> currently sees for this
+    /// torrent — <see cref="Services.DownloadQueueService.ProcessTorrentItemAsync"/>'s progress
+    /// callback copies these onto the item on every tick, same "live-only, never persisted" pattern
+    /// as <see cref="DownloadedBytes"/>/<see cref="TotalBytes"/> above (meaningless once the item
+    /// isn't actually <see cref="DownloadQueueStatus.Active"/>). Null for a non-<see cref="DownloadKind.Torrent"/>
+    /// row, or a torrent row that hasn't started reporting peer counts yet (still resolving metadata).
+    /// </summary>
+    public int? SeederCount { get; set; }
+
+    public int? LeecherCount { get; set; }
+
+    /// <summary>
+    /// A short human-readable torrent phase — "Fetching metadata…", "Checking existing files…" —
+    /// shown in place of the size readout while a <see cref="DownloadKind.Torrent"/> row is in one of
+    /// those phases (see <c>Views.MainWindow</c>'s queue row template). Null once real piece
+    /// downloading is underway, so <see cref="SizeText"/> takes over instead — same live-only,
+    /// never-persisted reasoning as <see cref="SeederCount"/> above.
+    /// </summary>
+    public string? PhaseText { get; set; }
+
     public string DisplayTitle => string.IsNullOrEmpty(Title) ? Url : Title;
 
     public string StatusText => Status.ToString();
 
-    /// <summary>"1080p" for a video row, "File" for a generic one — <see cref="Resolution"/> has no meaning there.</summary>
-    private string KindLabel => Kind == DownloadKind.Video ? $"{Resolution}p" : "File";
+    /// <summary>"1080p" for a video row, "File"/"Torrent" for the other kinds — <see cref="Resolution"/> has no meaning for those.</summary>
+    private string KindLabel => Kind switch
+    {
+        DownloadKind.Video => $"{Resolution}p",
+        DownloadKind.Torrent => "Torrent",
+        _ => "File"
+    };
 
     public string Subtitle => Status is DownloadQueueStatus.Failed or DownloadQueueStatus.Missing && !string.IsNullOrEmpty(ErrorMessage)
         ? $"{KindLabel}  •  {ErrorMessage}"
@@ -138,10 +169,25 @@ public sealed class DownloadQueueItem
 
     public bool ShowProgress => Status is DownloadQueueStatus.Active or DownloadQueueStatus.Paused;
 
-    /// <summary>Only once yt-dlp has actually reported a size — see <see cref="TotalBytes"/>'s doc comment.</summary>
-    public bool ShowSize => ShowProgress && TotalBytes is > 0;
+    /// <summary>Only once yt-dlp/the torrent engine has actually reported a size — see <see cref="TotalBytes"/>'s doc comment.</summary>
+    public bool ShowSize => ShowProgress && TotalBytes is > 0 && string.IsNullOrEmpty(PhaseText);
 
     public string SizeText => $"{FormatBytes(DownloadedBytes ?? 0)} / {FormatBytes(TotalBytes ?? 0)}";
+
+    /// <summary>Shown instead of <see cref="SizeText"/> while <see cref="PhaseText"/> is set — see that property's own doc comment.</summary>
+    public bool ShowPhase => ShowProgress && !string.IsNullOrEmpty(PhaseText);
+
+    /// <summary>
+    /// Only for a <see cref="DownloadKind.Torrent"/> row, and only once <see cref="Services.TorrentEngine"/>
+    /// has reported at least one peer-count tick (both fields are set together — see that class).
+    /// Excludes <see cref="PhaseText"/> the same way <see cref="ShowSize"/> does — both bind to the
+    /// same spot in the queue row (see <c>Views.MainWindow</c>'s row template), and a torrent can
+    /// have both a phase and a peer count at once (peers are visible during hash-checking, say), so
+    /// without this a row could show both texts overlapping in the same place.
+    /// </summary>
+    public bool ShowPeers => ShowProgress && Kind == DownloadKind.Torrent && SeederCount.HasValue && string.IsNullOrEmpty(PhaseText);
+
+    public string PeersText => $"{SeederCount ?? 0} seeders  •  {LeecherCount ?? 0} peers";
 
     /// <summary>
     /// Binary (1024-based) units, matching what these bytes were actually computed from — yt-dlp's

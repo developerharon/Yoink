@@ -208,8 +208,14 @@
                                             </Grid>
                                             <ProgressBar Minimum="0" Maximum="100" Value="{Binding ProgressPercent, Mode=OneWay}"
                                                          IsVisible="{Binding ShowProgress}" />
-                                            <TextBlock Text="{Binding SizeText}" Classes="Caption" FontSize="11"
-                                                       HorizontalAlignment="Right" IsVisible="{Binding ShowSize}" />
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <TextBlock Grid.Column="0" Text="{Binding PhaseText}" Classes="Caption" FontSize="11"
+                                                           IsVisible="{Binding ShowPhase}" />
+                                                <TextBlock Grid.Column="0" Text="{Binding PeersText}" Classes="Caption" FontSize="11"
+                                                           IsVisible="{Binding ShowPeers}" />
+                                                <TextBlock Grid.Column="1" Text="{Binding SizeText}" Classes="Caption" FontSize="11"
+                                                           HorizontalAlignment="Right" IsVisible="{Binding ShowSize}" />
+                                            </Grid>
                                         </StackPanel>
                                     </Border>
                                 </DataTemplate>

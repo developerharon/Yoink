@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
 using Yoink.Models;
 using Yoink.Services;
 
@@ -46,6 +47,15 @@ public class DownloadQueueServiceTests : IDisposable
     private string DbPath([System.Runtime.CompilerServices.CallerMemberName] string name = "") =>
         Path.Combine(_tempDir, $"{name}.db");
 
+    /// <summary>
+    /// Same reasoning as <see cref="DbPath"/> — redirects <see cref="DownloadQueueService"/>'s
+    /// <see cref="TorrentEngine"/> cache directory into this test's own temp folder rather than the
+    /// real user's %AppData%, which its constructor would otherwise create for real (see
+    /// <see cref="TorrentEngine"/>'s own constructor).
+    /// </summary>
+    private string TorrentCacheDir([System.Runtime.CompilerServices.CallerMemberName] string name = "") =>
+        Path.Combine(_tempDir, $"{name}-torrents");
+
     /// <summary>Closes the schedule window so the background processing loop never picks anything
     /// up — see the class doc comment.</summary>
     private static void CloseScheduleWindow()
@@ -58,7 +68,7 @@ public class DownloadQueueServiceTests : IDisposable
     public async Task EnqueueAsync_PersistsAPendingItem_RetrievableViaGetAllAsync()
     {
         CloseScheduleWindow();
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         var enqueued = await queue.EnqueueAsync("https://youtu.be/abc123", 1080);
 
@@ -82,7 +92,7 @@ public class DownloadQueueServiceTests : IDisposable
         // at all — passing that through here is what lets DownloadQueueService's own background
         // loop skip its redundant GetVideoInfoAsync call once this item is dequeued.
         CloseScheduleWindow();
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         var enqueued = await queue.EnqueueAsync(
             "https://youtu.be/abc123", 1080, title: "Some Resolved Title", containerFormat: "mkv");
@@ -103,7 +113,7 @@ public class DownloadQueueServiceTests : IDisposable
         // same way EnqueueAsync_PersistsAnAlreadyResolvedTitleAndContainerFormat already does for
         // those two.
         CloseScheduleWindow();
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         var enqueued = await queue.EnqueueAsync(
             "https://youtu.be/abc123", 1080, title: "Some Resolved Title", infoJson: """{"id":"abc123"}""");
@@ -117,7 +127,7 @@ public class DownloadQueueServiceTests : IDisposable
     [Fact]
     public async Task EnqueueAsync_Rejects_BlankUrl()
     {
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         await Assert.ThrowsAsync<ArgumentException>(() => queue.EnqueueAsync("   ", 1080));
     }
@@ -126,7 +136,7 @@ public class DownloadQueueServiceTests : IDisposable
     public async Task ReorderAsync_UpdatesPosition()
     {
         CloseScheduleWindow();
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         var first = await queue.EnqueueAsync("https://youtu.be/first", 720);
         var second = await queue.EnqueueAsync("https://youtu.be/second", 720);
@@ -142,7 +152,7 @@ public class DownloadQueueServiceTests : IDisposable
     public async Task PauseAsync_OnAPendingItem_MarksItPaused()
     {
         CloseScheduleWindow();
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
         var item = await queue.EnqueueAsync("https://youtu.be/abc123", 1080);
 
         await queue.PauseAsync(item.Id);
@@ -155,7 +165,7 @@ public class DownloadQueueServiceTests : IDisposable
     public async Task ResumeAsync_OnAPausedItem_MarksItPendingAgain()
     {
         CloseScheduleWindow();
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
         var item = await queue.EnqueueAsync("https://youtu.be/abc123", 1080);
         await queue.PauseAsync(item.Id);
 
@@ -169,7 +179,7 @@ public class DownloadQueueServiceTests : IDisposable
     public async Task CancelAsync_OnAPendingItem_MarksItCanceled()
     {
         CloseScheduleWindow();
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
         var item = await queue.EnqueueAsync("https://youtu.be/abc123", 1080);
 
         await queue.CancelAsync(item.Id);
@@ -182,7 +192,7 @@ public class DownloadQueueServiceTests : IDisposable
     public async Task RetryAsync_OnACanceledItem_MarksItPendingAndClearsError()
     {
         CloseScheduleWindow();
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
         var item = await queue.EnqueueAsync("https://youtu.be/abc123", 1080);
         await queue.CancelAsync(item.Id);
 
@@ -197,7 +207,7 @@ public class DownloadQueueServiceTests : IDisposable
     public async Task ItemChanged_FiresOnEnqueueAndOnStatusUpdate()
     {
         CloseScheduleWindow();
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         var seenStatuses = new System.Collections.Concurrent.ConcurrentQueue<DownloadQueueStatus>();
         queue.ItemChanged += item => seenStatuses.Enqueue(item.Status);
@@ -224,7 +234,7 @@ public class DownloadQueueServiceTests : IDisposable
         // installed on the machine running the test.
         var ytDlp = new YtDlpClient();
         ytDlp.UseResolvedPaths(Path.Combine(_tempDir, "yt-dlp-that-does-not-exist"), null);
-        using var queue = new DownloadQueueService(ytDlp, DbPath());
+        using var queue = new DownloadQueueService(ytDlp, DbPath(), TorrentCacheDir());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => queue.EnqueueAndWaitAsync("https://youtu.be/abc123", 1080));
@@ -250,7 +260,7 @@ public class DownloadQueueServiceTests : IDisposable
         Directory.CreateDirectory(downloadFolder);
         SettingsService.Save(new AppSettings { DownloadFolder = downloadFolder });
 
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         var enqueued = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, kind: DownloadKind.File);
         Assert.Equal(DownloadKind.File, enqueued.Kind);
@@ -281,7 +291,7 @@ public class DownloadQueueServiceTests : IDisposable
         Directory.CreateDirectory(downloadFolder);
         SettingsService.Save(new AppSettings { DownloadFolder = downloadFolder });
 
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         var enqueued = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, kind: DownloadKind.File);
         var completed = await queue.WaitForCompletionAsync(enqueued.Id);
@@ -293,6 +303,45 @@ public class DownloadQueueServiceTests : IDisposable
         var stored = (await queue.GetAllAsync()).Single(i => i.Id == enqueued.Id);
         Assert.Equal(DownloadQueueStatus.Missing, stored.Status);
         Assert.Equal("File no longer found on disk.", stored.ErrorMessage);
+    }
+
+    /// <summary>
+    /// A DownloadKind.Torrent row's FilePath is a directory, not a file (see
+    /// ProcessTorrentItemAsync's own doc comment) — File.Exists alone returns false for a path that's
+    /// actually a directory even when it's still very much there, which would have misfired on every
+    /// single completed torrent (see CheckForMissingFilesAsync's own Directory.Exists fix for this).
+    /// No real torrent download is driven here (no swarm/seed available in a test) — enqueuing as
+    /// DownloadKind.Torrent and then updating the row directly to Completed with a real directory as
+    /// FilePath (the same shape ProcessTorrentItemAsync itself would have left it in) is enough to
+    /// exercise the check on its own.
+    /// </summary>
+    [Fact(Timeout = 20_000)]
+    public async Task CheckForMissingFilesAsync_DoesNotMarkATorrentRowMissing_WhileItsDirectoryStillExists()
+    {
+        var dbPath = DbPath();
+        var torrentDir = Path.Combine(_tempDir, "SomeTorrent");
+        Directory.CreateDirectory(torrentDir);
+
+        CloseScheduleWindow();
+        using var queue = new DownloadQueueService(new YtDlpClient(), dbPath, TorrentCacheDir());
+        var enqueued = await queue.EnqueueAsync(
+            "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a", resolution: 0, kind: DownloadKind.Torrent);
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = dbPath }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE download_queue SET Status = $status, FilePath = $filePath WHERE Id = $id";
+            command.Parameters.AddWithValue("$status", DownloadQueueStatus.Completed.ToString());
+            command.Parameters.AddWithValue("$filePath", torrentDir);
+            command.Parameters.AddWithValue("$id", enqueued.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await queue.CheckForMissingFilesAsync();
+
+        var stored = (await queue.GetAllAsync()).Single(i => i.Id == enqueued.Id);
+        Assert.Equal(DownloadQueueStatus.Completed, stored.Status);
     }
 
     /// <summary>
@@ -311,7 +360,7 @@ public class DownloadQueueServiceTests : IDisposable
         Directory.CreateDirectory(downloadFolder);
         SettingsService.Save(new AppSettings { DownloadFolder = downloadFolder });
 
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         var enqueued = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, kind: DownloadKind.File);
         var completed = await queue.WaitForCompletionAsync(enqueued.Id);
@@ -347,7 +396,7 @@ public class DownloadQueueServiceTests : IDisposable
         Directory.CreateDirectory(downloadFolder);
         SettingsService.Save(new AppSettings { DownloadFolder = downloadFolder });
 
-        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
 
         var first = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, title: "duplicate.bin", kind: DownloadKind.File);
         var firstCompleted = await queue.WaitForCompletionAsync(first.Id);
@@ -420,10 +469,11 @@ public class DownloadQueueServiceTests : IDisposable
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
         var dbPath = DbPath();
+        var torrentCacheDir = TorrentCacheDir();
         long firstId, secondId;
 
         CloseScheduleWindow();
-        using (var seedQueue = new DownloadQueueService(new YtDlpClient(), dbPath))
+        using (var seedQueue = new DownloadQueueService(new YtDlpClient(), dbPath, torrentCacheDir))
         {
             firstId = (await seedQueue.EnqueueAsync("https://youtu.be/abc123", 1080, title: "First video")).Id;
             secondId = (await seedQueue.EnqueueAsync("https://youtu.be/def456", 1080, title: "Second video")).Id;
@@ -437,7 +487,7 @@ public class DownloadQueueServiceTests : IDisposable
 
         var ytDlp = new YtDlpClient();
         ytDlp.UseResolvedPaths(fakeYtDlp, null);
-        using var queue = new DownloadQueueService(ytDlp, dbPath);
+        using var queue = new DownloadQueueService(ytDlp, dbPath, torrentCacheDir);
 
         // Registered immediately after construction — before the loop's own first iteration has any
         // realistic chance to reach, let alone finish, the first item — so there's no window for
