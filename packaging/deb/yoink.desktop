@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Yoink
+Comment=Download YouTube videos, files, and torrents
+Exec=/opt/yoink/Yoink %u
+Icon=yoink
+Categories=Network;FileTransfer;
+Terminal=false
+StartupWMClass=Yoink

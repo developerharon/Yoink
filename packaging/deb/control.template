@@ -1,0 +1,16 @@
+Package: yoink
+Version: {{VERSION}}
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: Haron Kipkorir <ronoharonkip@gmail.com>
+Recommends: libnotify-bin
+Homepage: https://github.com/developerharon/Yoink
+Description: Download YouTube videos, files, and torrents
+ Yoink is a cross-platform desktop app for downloading YouTube videos, direct
+ file links, and torrents, with a queue, scheduling, concurrency limits, and
+ speed limits.
+ .
+ Ships self-contained (bundles its own .NET runtime) — no separate runtime
+ dependency. yt-dlp and ffmpeg are downloaded and managed by the app itself
+ the first time they're needed if not already on PATH.
