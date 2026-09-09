@@ -126,6 +126,16 @@ public class AppSettings
     public DateTimeOffset? LastDependencyCheckUtc { get; set; }
 
     /// <summary>
+    /// Whether <see cref="Services.NativeMessagingHost"/>'s Chrome native-messaging manifest has
+    /// already been written to this user's browser config directories — see
+    /// <c>Views.MainWindow.EnsureNativeMessagingHostRegistered</c>. Mirrors
+    /// <see cref="Services.DependencyProvisioningService"/>'s own "no-op past first launch" shape;
+    /// nothing in <c>Views.SettingsView</c> exposes this, same as <see cref="InstalledYtDlpVersion"/>
+    /// above — purely internal bookkeeping, not a user-facing preference.
+    /// </summary>
+    public bool NativeMessagingHostRegistered { get; set; }
+
+    /// <summary>
     /// Extra tracker URLs <see cref="Services.TorrentEngine"/> announces every torrent to, on top of
     /// whichever ones the magnet link/<c>.torrent</c> file already came with — added directly in
     /// response to a real "stuck at Fetching torrent metadata forever" report: a magnet with few or no

@@ -39,6 +39,7 @@ namespace Yoink.Tests.Views;
 public class MainWindowNavigationTests : IDisposable
 {
     private readonly string _originalSettingsPath = SettingsService.SettingsPath;
+    private readonly string _originalNativeMessagingHomeDirectory = NativeMessagingHost.HomeDirectory;
     private readonly string _tempDir = Path.Combine(Path.GetTempPath(), $"yoink-tests-{Guid.NewGuid():N}");
 
     // MainWindow's constructor builds a UpdateService, which throws InvalidOperationException
@@ -56,11 +57,18 @@ public class MainWindowNavigationTests : IDisposable
     {
         Directory.CreateDirectory(_tempDir);
         SettingsService.SettingsPath = Path.Combine(_tempDir, "settings.json");
+
+        // MainWindow's constructor self-registers the Chrome native-messaging host manifest on
+        // Linux (see NativeMessagingHost's own doc comment) — redirected here for the same reason
+        // SettingsPath is redirected above: never touch a real developer's actual
+        // ~/.config/google-chrome while constructing a real MainWindow for a headless UI test.
+        NativeMessagingHost.HomeDirectory = _tempDir;
     }
 
     public void Dispose()
     {
         SettingsService.SettingsPath = _originalSettingsPath;
+        NativeMessagingHost.HomeDirectory = _originalNativeMessagingHomeDirectory;
         Directory.Delete(_tempDir, recursive: true);
     }
 

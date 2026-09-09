@@ -110,6 +110,9 @@ public partial class MainWindow : Window
         _ = LoadQueueAsync();
         _ = EnsureDependenciesAsync();
         _ = CheckForUpdatesAsync();
+
+        if (OperatingSystem.IsLinux())
+            EnsureNativeMessagingHostRegistered();
     }
 
     /// <summary>
@@ -253,6 +256,45 @@ public partial class MainWindow : Window
     private void OnClipboardUrlDetected(string url)
     {
         Dispatcher.UIThread.Post(() => _ = AddDownloadDialog.ShowAsync(this, _queue, _ytDlp, url));
+    }
+
+    /// <summary>
+    /// A URL caught outside the app entirely — the Chrome extension's context menu, via
+    /// <see cref="App.RestoreMainWindow"/>/<c>App.SetUpIpcServer</c> for an already-running instance,
+    /// or <c>Program.PendingLaunchUrl</c> for a cold start. Brings the window to front (a no-op if it
+    /// was already focused) and opens the same confirmation dialog every other catch mechanism uses
+    /// — never queues anything without that explicit confirmation.
+    /// </summary>
+    internal Task HandleExternalUrlAsync(string url)
+    {
+        App.RestoreMainWindow(this);
+        return AddDownloadDialog.ShowAsync(this, _queue, _ytDlp, url);
+    }
+
+    /// <summary>
+    /// One-time registration of the Chrome native-messaging host manifest (see
+    /// <see cref="NativeMessagingHost"/>'s own doc comment for the full bridge) — gated by
+    /// <see cref="AppSettings.NativeMessagingHostRegistered"/> so it runs exactly once per install,
+    /// best-effort like <see cref="NotificationService"/> (a failed write, e.g. no Chrome/Chromium
+    /// ever installed on this machine, is never worth surfacing as an error).
+    /// </summary>
+    private static void EnsureNativeMessagingHostRegistered()
+    {
+        var settings = SettingsService.Load();
+        if (settings.NativeMessagingHostRegistered)
+            return;
+
+        try
+        {
+            NativeMessagingHost.EnsureManifestRegistered();
+        }
+        catch
+        {
+            // Best-effort — see doc comment above.
+        }
+
+        settings.NativeMessagingHostRegistered = true;
+        SettingsService.Save(settings);
     }
 
     private async Task LoadQueueAsync()

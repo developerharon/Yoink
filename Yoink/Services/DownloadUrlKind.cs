@@ -70,4 +70,14 @@ public static class DownloadUrlKind
 
         return DownloadableFileExtensions.Any(ext => uri.AbsolutePath.EndsWith(ext, StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// Any of the three shapes this app knows how to turn into a queue item at all — a YouTube link,
+    /// a torrent source, or a plain downloadable file. Used by <c>Program.cs</c> to recognize a bare
+    /// positional command-line argument as a URL worth forwarding (rather than, say, some unrelated
+    /// flag), which is what lets the .deb's <c>.desktop</c> file's <c>Exec=... %u</c> and the Chrome
+    /// native-messaging host's own <c>Process.Start</c> fallback both hand Yoink a URL the same way.
+    /// </summary>
+    public static bool IsRecognizedDownloadUrl(string url) =>
+        IsYouTubeUrl(url) || IsTorrentSource(url) || LooksLikeDownloadableFile(url);
 }

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -7,6 +9,7 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Media;
 using Avalonia.Platform;
 using Avalonia.Styling;
+using Avalonia.Threading;
 using Yoink.Models;
 using Yoink.Services;
 using Yoink.Views;
@@ -23,6 +26,9 @@ public partial class App : Application
     public static WindowIcon? CurrentIcon { get; private set; }
 
     private static TrayIcon? _trayIcon;
+
+    // Cancels SingleInstanceIpcService's server loop on shutdown — see SetUpIpcServer.
+    private static readonly CancellationTokenSource IpcServerCts = new();
 
     public override void Initialize()
     {
@@ -45,9 +51,36 @@ public partial class App : Application
             var mainWindow = new MainWindow();
             desktop.MainWindow = mainWindow;
             SetUpTrayIcon(desktop, mainWindow);
+            SetUpIpcServer(desktop, mainWindow);
+
+            if (Program.PendingLaunchUrl is { } pendingUrl)
+                _ = mainWindow.HandleExternalUrlAsync(pendingUrl);
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    /// <summary>
+    /// The other half of the Chrome auto-catch bridge (see <c>NativeMessagingHost</c>'s own doc
+    /// comment): while this instance is the running primary (see <c>Program.cs</c>'s
+    /// <c>SingleInstanceLock</c> dance), listen for a URL handed off by a losing second launch or the
+    /// native-messaging host, and route it through the exact same "bring to front, open
+    /// AddDownloadDialog pre-filled" path <see cref="RestoreMainWindow"/>/
+    /// <c>MainWindow.HandleExternalUrlAsync</c> already give the tray icon. Started as early as
+    /// possible (right alongside the tray icon, not deferred to <c>MainWindow.Opened</c> the way the
+    /// clipboard watcher is) since this has no "attached to a screen" dependency to wait for.
+    /// </summary>
+    private static void SetUpIpcServer(IClassicDesktopStyleApplicationLifetime desktop, MainWindow mainWindow)
+    {
+        SingleInstanceIpcService.StartServer(
+            url =>
+            {
+                Dispatcher.UIThread.Post(() => _ = mainWindow.HandleExternalUrlAsync(url));
+                return Task.CompletedTask;
+            },
+            IpcServerCts.Token);
+
+        desktop.Exit += (_, _) => IpcServerCts.Cancel();
     }
 
     /// <summary>
@@ -114,7 +147,12 @@ public partial class App : Application
         };
     }
 
-    private static void RestoreMainWindow(Window window)
+    /// <summary>
+    /// Internal (not private) so <c>Views.MainWindow.HandleExternalUrlAsync</c> can reuse this exact
+    /// "bring to front" sequence for a URL arriving from <see cref="SetUpIpcServer"/>, rather than
+    /// duplicating it — same idea as the tray icon's own "Show Yoink"/click handlers below.
+    /// </summary>
+    internal static void RestoreMainWindow(Window window)
     {
         window.Show();
         window.WindowState = WindowState.Normal;
