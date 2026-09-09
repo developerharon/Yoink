@@ -10,7 +10,7 @@ this doc explains *why* the values are what they are; the XAML is the enforced v
 
 ## Name & feel
 
-**Yoink** — grab a video, keep it. The tone is quick, a little playful, but the UI itself should read as
+**Yoink** — grab it, keep it. The tone is quick, a little playful, but the UI itself should read as
 clean and competent rather than cutesy: think a focused utility app, not a toy.
 
 ## The mark

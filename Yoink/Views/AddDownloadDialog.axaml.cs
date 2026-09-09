@@ -4,6 +4,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Platform.Storage;
+using MonoTorrent;
 using Yoink.Models;
 using Yoink.Services;
 
@@ -22,14 +24,25 @@ namespace Yoink.Views;
 /// <see cref="DownloadQueueService.EnqueueAsync"/> also means the background loop skips its own
 /// redundant metadata fetch once this item is dequeued, so the actual download starts immediately.
 ///
-/// Now handles two kinds of URL, not just YouTube (turning Yoink into a general download manager):
-/// <see cref="DownloadUrlKind.IsYouTubeUrl"/> decides which — a YouTube URL goes through the
-/// resolve-video flow above unchanged, anything else is treated as a plain direct-link file and
-/// resolved instead via a quick <see cref="DownloadEngine.ProbeAsync"/> (filename/size/content-type),
-/// shown in the same "resolved, now confirm" panel with the video-only resolution/container pickers
-/// hidden. Either way, the resolved name is passed through to <see cref="DownloadQueueService.EnqueueAsync"/>'s
-/// <c>title</c> parameter, so <c>DownloadQueueService.ProcessFileItemAsync</c> skips its own
-/// redundant probe the same way the video path already skipped its redundant metadata fetch.
+/// Now handles three kinds of source, not just YouTube (turning Yoink into a general download
+/// manager): <see cref="DownloadUrlKind.IsTorrentSource"/> (checked first — a magnet link's own URI
+/// scheme wouldn't otherwise be mistaken for anything else, but a <c>.torrent</c> URL's http(s)
+/// scheme would fall through to the plain-file check below it) routes to
+/// <see cref="ResolveTorrentAsync"/>; <see cref="DownloadUrlKind.IsYouTubeUrl"/> decides between the
+/// resolve-video flow (unchanged) and a plain direct-link file resolved via a quick
+/// <see cref="DownloadEngine.ProbeAsync"/> (filename/size/content-type). All three land in the same
+/// "resolved, now confirm" panel, with <c>PanelVideoOptions</c> (resolution/container) shown only for
+/// a video. Either way, the resolved name is passed through to
+/// <see cref="DownloadQueueService.EnqueueAsync"/>'s <c>title</c> parameter, so
+/// <c>DownloadQueueService</c>'s per-kind processing methods skip their own redundant resolve step
+/// the same way the video path already skips its redundant metadata fetch.
+///
+/// A local <c>.torrent</c> file (picked via <see cref="BtnBrowseTorrentFile_Click"/>, rather than
+/// pasted into <see cref="TxtUrl"/> — it has no URL/clipboard-text form) is tracked separately in
+/// <see cref="_localTorrentFilePath"/> so it isn't mistaken for a YouTube/generic-file URL by the
+/// checks above; <see cref="TxtUrl_TextChanged"/> clears it back to null the moment the user types
+/// into <see cref="TxtUrl"/> instead, so whichever input the user touched last is the one that wins
+/// rather than both silently fighting over which source actually gets resolved.
 /// </summary>
 public partial class AddDownloadDialog : Window
 {
@@ -40,6 +53,17 @@ public partial class AddDownloadDialog : Window
     private YtDlpVideoInfo? _resolvedInfo;
     private DownloadKind _detectedKind = DownloadKind.Video;
     private Stage _stage = Stage.UrlEntry;
+    private string? _localTorrentFilePath;
+
+    /// <summary>
+    /// The exact source string actually resolved — set once, at the top of <see cref="ResolveAsync"/>,
+    /// and reused by <see cref="AddToQueueAsync"/> instead of that method re-reading
+    /// <see cref="TxtUrl"/>/<see cref="_localTorrentFilePath"/> itself, which could otherwise disagree
+    /// with what was actually resolved if either changed in between (most concretely possible for a
+    /// local <c>.torrent</c> file: <see cref="TxtUrl"/> never shows that path at all, so there'd be
+    /// nothing else to read it back from here).
+    /// </summary>
+    private string _resolvedSource = string.Empty;
 
     public AddDownloadDialog()
     {
@@ -92,20 +116,31 @@ public partial class AddDownloadDialog : Window
 
     private async Task ResolveAsync()
     {
-        var url = TxtUrl.Text ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(url))
+        var source = _localTorrentFilePath ?? (TxtUrl.Text ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(source))
         {
-            await MessageBoxWindow.ShowAsync(this, "Please paste a URL first.", "Error");
+            await MessageBoxWindow.ShowAsync(this, "Please paste a URL, or browse for a .torrent file, first.", "Error");
             return;
         }
 
-        _detectedKind = DownloadUrlKind.IsYouTubeUrl(url) ? DownloadKind.Video : DownloadKind.File;
+        _resolvedSource = source;
+        _detectedKind = _localTorrentFilePath is not null || DownloadUrlKind.IsTorrentSource(source)
+            ? DownloadKind.Torrent
+            : DownloadUrlKind.IsYouTubeUrl(source) ? DownloadKind.Video : DownloadKind.File;
         SetStage(Stage.Loading);
 
-        if (_detectedKind == DownloadKind.Video)
-            await ResolveVideoAsync(url);
-        else
-            await ResolveFileAsync(url);
+        switch (_detectedKind)
+        {
+            case DownloadKind.Video:
+                await ResolveVideoAsync(source);
+                break;
+            case DownloadKind.Torrent:
+                await ResolveTorrentAsync(source);
+                break;
+            default:
+                await ResolveFileAsync(source);
+                break;
+        }
     }
 
     private async Task ResolveVideoAsync(string url)
@@ -169,6 +204,87 @@ public partial class AddDownloadDialog : Window
     }
 
     /// <summary>
+    /// Resolves a torrent source. A magnet link's real name/size isn't known until its metadata
+    /// actually resolves — a swarm round trip, not something worth blocking this dialog on the way
+    /// the other two kinds' resolve steps are (a quick HTTP call either way) — so this deliberately
+    /// does <i>not</i> try to connect to anything for one: <see cref="TorrentEngine.TryGetMagnetDisplayName"/>
+    /// (the magnet URI's own <c>dn=</c> parameter, if it has one) is the best available name up front,
+    /// and the caption below says plainly that the rest resolves once the download actually starts
+    /// (see <c>DownloadQueueService.ProcessTorrentItemAsync</c> for where that real resolve happens).
+    /// A local/remote <c>.torrent</c> file, by contrast, already has its full contents on hand (or one
+    /// quick download away) with no swarm involved, so it resolves fully here, same as the file path
+    /// above.
+    /// </summary>
+    private async Task ResolveTorrentAsync(string source)
+    {
+        if (DownloadUrlKind.IsMagnetLink(source))
+        {
+            TxtResolvedTitle.Text = TorrentEngine.TryGetMagnetDisplayName(source) ?? "Magnet link";
+            TxtFileMeta.Text = "Peer count and file size resolve once the download starts.";
+            TxtFileMeta.IsVisible = true;
+            PanelVideoOptions.IsVisible = false;
+            SetStage(Stage.Options);
+            return;
+        }
+
+        Torrent torrent;
+        try
+        {
+            torrent = await TorrentEngine.LoadTorrentAsync(source);
+        }
+        catch (Exception ex)
+        {
+            SetStage(Stage.UrlEntry);
+            await MessageBoxWindow.ShowAsync(this, ex.Message, "Couldn't resolve that torrent");
+            return;
+        }
+
+        TxtResolvedTitle.Text = torrent.Name;
+        TxtFileMeta.Text = $"{DownloadQueueItem.FormatBytes(torrent.Size)}  •  {torrent.Files.Count} file{(torrent.Files.Count == 1 ? "" : "s")}";
+        TxtFileMeta.IsVisible = true;
+        PanelVideoOptions.IsVisible = false;
+        SetStage(Stage.Options);
+    }
+
+    /// <summary>Clears a previously browsed-for local .torrent file the moment the user types here instead — see the class doc comment.</summary>
+    private void TxtUrl_TextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (_localTorrentFilePath is not null)
+        {
+            _localTorrentFilePath = null;
+            TxtSelectedTorrentFile.IsVisible = false;
+        }
+    }
+
+    /// <summary>
+    /// The "Browse" half of torrent input — a local .torrent file has no clipboard-text/URL form, so
+    /// unlike everything else this dialog resolves, it can't just be pasted into <see cref="TxtUrl"/>.
+    /// Same <see cref="IStorageProvider"/> file-picker mechanism <c>Views.SettingsView</c>'s own
+    /// folder Browse button already uses.
+    /// </summary>
+    private async void BtnBrowseTorrentFile_Click(object? sender, RoutedEventArgs e)
+    {
+        var storageProvider = TopLevel.GetTopLevel(this)?.StorageProvider;
+        if (storageProvider is null)
+            return;
+
+        var result = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Choose a .torrent file",
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("Torrent files") { Patterns = ["*.torrent"] }]
+        });
+
+        var path = result.Count > 0 ? result[0].TryGetLocalPath() : null;
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        _localTorrentFilePath = path;
+        TxtSelectedTorrentFile.Text = $"Selected: {System.IO.Path.GetFileName(path)}";
+        TxtSelectedTorrentFile.IsVisible = true;
+    }
+
+    /// <summary>
     /// Every distinct height yt-dlp actually reported a video-capable format for, highest first
     /// (so the best available quality is the default) — replacing the old fixed 360/480/720/1080/
     /// 1440 list, which both guessed at what was actually available for a given video and had no
@@ -194,22 +310,39 @@ public partial class AddDownloadDialog : Window
 
     private async Task AddToQueueAsync()
     {
-        var url = TxtUrl.Text ?? string.Empty;
+        var source = _resolvedSource;
 
         try
         {
-            if (_detectedKind == DownloadKind.Video)
+            switch (_detectedKind)
             {
-                var resolutionText = (string)CboResolution.SelectedItem!;
-                var resolution = int.Parse(resolutionText.TrimEnd('p'));
-                var containerFormat = ((ComboBoxItem)CboContainer.SelectedItem!).Content!.ToString()!.ToLowerInvariant();
+                case DownloadKind.Video:
+                {
+                    var resolutionText = (string)CboResolution.SelectedItem!;
+                    var resolution = int.Parse(resolutionText.TrimEnd('p'));
+                    var containerFormat = ((ComboBoxItem)CboContainer.SelectedItem!).Content!.ToString()!.ToLowerInvariant();
 
-                await _queue!.EnqueueAsync(url, resolution, title: _resolvedInfo!.Title, containerFormat: containerFormat, kind: DownloadKind.Video, infoJson: _resolvedInfo.RawJson);
-            }
-            else
-            {
-                var fileName = TxtResolvedTitle.Text ?? DownloadEngine.GetFileNameFromUri(new Uri(url));
-                await _queue!.EnqueueAsync(url, resolution: 0, title: fileName, kind: DownloadKind.File);
+                    await _queue!.EnqueueAsync(source, resolution, title: _resolvedInfo!.Title, containerFormat: containerFormat, kind: DownloadKind.Video, infoJson: _resolvedInfo.RawJson);
+                    break;
+                }
+                case DownloadKind.Torrent:
+                {
+                    // Whatever TxtResolvedTitle ended up showing — the torrent's real name for a
+                    // resolved .torrent file, or the magnet's own dn= (or "Magnet link", if it had
+                    // none) — same "pass through whatever was already resolved" reasoning as the
+                    // other two kinds. A placeholder title here is harmless even for a magnet link:
+                    // DownloadQueueService.ProcessTorrentItemAsync's own progress reporting
+                    // overwrites it with the real resolved name the moment metadata arrives.
+                    var title = TxtResolvedTitle.Text ?? "Torrent";
+                    await _queue!.EnqueueAsync(source, resolution: 0, title: title, kind: DownloadKind.Torrent);
+                    break;
+                }
+                default:
+                {
+                    var fileName = TxtResolvedTitle.Text ?? DownloadEngine.GetFileNameFromUri(new Uri(source));
+                    await _queue!.EnqueueAsync(source, resolution: 0, title: fileName, kind: DownloadKind.File);
+                    break;
+                }
             }
 
             Close();

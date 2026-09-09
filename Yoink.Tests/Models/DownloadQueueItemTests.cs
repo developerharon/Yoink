@@ -188,4 +188,67 @@ public class DownloadQueueItemTests
 
         Assert.Equal(expected, item.SizeText);
     }
+
+    [Fact]
+    public void Subtitle_ShowsTorrent_ForTorrentKind()
+    {
+        var item = Make(DownloadQueueStatus.Completed);
+        item.Kind = DownloadKind.Torrent;
+        item.Resolution = 0; // meaningless for Torrent kind, per DownloadQueueItem's own doc comment
+
+        Assert.StartsWith("Torrent", item.Subtitle);
+    }
+
+    [Fact]
+    public void ShowPeers_IsTrue_ForATorrentRow_OnceSeederCountIsKnown()
+    {
+        var item = Make(DownloadQueueStatus.Active);
+        item.Kind = DownloadKind.Torrent;
+        item.SeederCount = 5;
+        item.LeecherCount = 2;
+
+        Assert.True(item.ShowPeers);
+        Assert.Equal("5 seeders  •  2 peers", item.PeersText);
+    }
+
+    [Fact]
+    public void ShowPeers_IsFalse_ForANonTorrentRow_EvenWithSeederCountSet()
+    {
+        var item = Make(DownloadQueueStatus.Active);
+        item.Kind = DownloadKind.File;
+        item.SeederCount = 5;
+
+        Assert.False(item.ShowPeers);
+    }
+
+    /// <summary>
+    /// PhaseText/PeersText/SizeText all bind to the same spot in the queue row template — see
+    /// DownloadQueueItem's own doc comment on why exactly one of ShowPhase/ShowPeers/ShowSize must be
+    /// true at a time, never two at once (a torrent can genuinely have both a phase and a known peer
+    /// count simultaneously, e.g. peers are visible during hash-checking).
+    /// </summary>
+    [Fact]
+    public void ShowPhase_TakesPriorityOver_ShowPeersAndShowSize()
+    {
+        var item = Make(DownloadQueueStatus.Active);
+        item.Kind = DownloadKind.Torrent;
+        item.SeederCount = 5;
+        item.LeecherCount = 2;
+        item.TotalBytes = 1024;
+        item.PhaseText = "Checking existing files…";
+
+        Assert.True(item.ShowPhase);
+        Assert.False(item.ShowPeers);
+        Assert.False(item.ShowSize);
+    }
+
+    [Fact]
+    public void ShowPeers_IsFalse_WhenSeederCountNotYetKnown()
+    {
+        var item = Make(DownloadQueueStatus.Active);
+        item.Kind = DownloadKind.Torrent;
+        item.SeederCount = null;
+
+        Assert.False(item.ShowPeers);
+    }
 }

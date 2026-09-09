@@ -244,6 +244,64 @@ public class BuildHelpersTests
 
         Assert.Equal(folder, System.IO.Path.GetDirectoryName(result));
     }
+
+    [Fact]
+    public void BuildTorrentDestinationPath_StripsInvalidFileNameCharacters()
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        var name = "Some" + new string(invalid) + "Torrent";
+
+        var path = DownloadQueueService.BuildTorrentDestinationPath(name, System.IO.Path.GetTempPath());
+
+        foreach (var c in invalid)
+            Assert.DoesNotContain(c, System.IO.Path.GetFileName(path));
+    }
+
+    [Fact]
+    public void BuildTorrentDestinationPath_FallsBackToTorrent_WhenNameIsEntirelyInvalidCharacters()
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        if (invalid.Length == 0)
+            return; // no platform-invalid characters to construct this case with
+
+        var path = DownloadQueueService.BuildTorrentDestinationPath(new string(invalid), System.IO.Path.GetTempPath());
+
+        Assert.Equal("torrent", System.IO.Path.GetFileName(path));
+    }
+
+    [Fact]
+    public void BuildTorrentDestinationPath_UsesGivenDownloadFolder()
+    {
+        var downloadFolder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SomeDownloadFolder");
+
+        var path = DownloadQueueService.BuildTorrentDestinationPath("My Torrent", downloadFolder);
+
+        Assert.Equal(downloadFolder, System.IO.Path.GetDirectoryName(path));
+    }
+
+    /// <summary>
+    /// The bug InsertPathSuffix's <c>isDirectory</c> parameter exists to avoid — see that parameter's
+    /// own doc comment: a directory name containing a genuine dot (very common for torrents, e.g. a
+    /// Linux ISO's "Ubuntu 24.04") must not have that dot treated as a file extension.
+    /// </summary>
+    [Fact]
+    public void InsertPathSuffix_ForADirectory_DoesNotMisreadADotAsAFileExtension()
+    {
+        var folder = System.IO.Path.GetTempPath();
+        var path = System.IO.Path.Combine(folder, "Ubuntu 24.04");
+
+        var result = DownloadQueueService.InsertPathSuffix(path, 1, isDirectory: true);
+
+        Assert.Equal(System.IO.Path.Combine(folder, "Ubuntu 24.04 (1)"), result);
+    }
+
+    [Fact]
+    public void InsertPathSuffix_ForADirectory_ReturnsPathUnchanged_ForSuffixZeroOrLess()
+    {
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Some Torrent");
+
+        Assert.Equal(path, DownloadQueueService.InsertPathSuffix(path, 0, isDirectory: true));
+    }
 }
 
 /// <summary>SettingsService.GetDefaultDownloadFolder/ParseXdgDownloadDir — the platform-Downloads-folder

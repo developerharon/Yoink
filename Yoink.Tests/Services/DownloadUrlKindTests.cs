@@ -35,4 +35,40 @@ public class DownloadUrlKindTests
     [InlineData("not a url at all")]
     [InlineData("")]
     public void LooksLikeDownloadableFile_False_ForAnythingElse(string url) => Assert.False(DownloadUrlKind.LooksLikeDownloadableFile(url));
+
+    [Theory]
+    [InlineData("magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=Some+Torrent")]
+    [InlineData("MAGNET:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a")] // scheme match is case-insensitive
+    public void IsMagnetLink_RecognizesMagnetScheme(string url) => Assert.True(DownloadUrlKind.IsMagnetLink(url));
+
+    [Theory]
+    [InlineData("https://example.com/some.torrent")]
+    [InlineData("https://youtube.com/watch?v=dQw4w9WgXcQ")]
+    [InlineData("not a url at all")]
+    [InlineData("")]
+    public void IsMagnetLink_False_ForAnythingElse(string url) => Assert.False(DownloadUrlKind.IsMagnetLink(url));
+
+    [Theory]
+    [InlineData("https://example.com/some.torrent")]
+    [InlineData("https://example.com/some.TORRENT")] // extension matching is case-insensitive
+    [InlineData("https://example.com/path/to/ubuntu-24.04.torrent")]
+    public void IsTorrentFileUrl_RecognizesTorrentExtension(string url) => Assert.True(DownloadUrlKind.IsTorrentFileUrl(url));
+
+    [Theory]
+    [InlineData("https://example.com/report.pdf")]
+    [InlineData("magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a")] // not http(s)
+    [InlineData("ftp://example.com/some.torrent")] // not http(s)
+    [InlineData("not a url at all")]
+    [InlineData("")]
+    public void IsTorrentFileUrl_False_ForAnythingElse(string url) => Assert.False(DownloadUrlKind.IsTorrentFileUrl(url));
+
+    [Theory]
+    [InlineData("magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a")]
+    [InlineData("https://example.com/some.torrent")]
+    public void IsTorrentSource_True_ForEitherShape(string url) => Assert.True(DownloadUrlKind.IsTorrentSource(url));
+
+    [Theory]
+    [InlineData("https://youtube.com/watch?v=dQw4w9WgXcQ")]
+    [InlineData("https://example.com/report.pdf")]
+    public void IsTorrentSource_False_ForAnythingElse(string url) => Assert.False(DownloadUrlKind.IsTorrentSource(url));
 }

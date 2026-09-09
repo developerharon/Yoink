@@ -130,7 +130,7 @@
                     <Grid ColumnDefinitions="*,Auto">
                         <StackPanel Grid.Column="0" Spacing="4">
                             <TextBlock Text="Downloads" Classes="AppTitle" />
-                            <TextBlock Text="Grab a video, keep watching." Classes="Subtitle" />
+                            <TextBlock Text="Every download, one queue." Classes="Subtitle" />
                         </StackPanel>
                         <Button Grid.Column="1" Content="+ Add download" Classes="Primary"
                                 VerticalAlignment="Center" Click="BtnAddDownload_Click" />
@@ -208,8 +208,14 @@
                                             </Grid>
                                             <ProgressBar Minimum="0" Maximum="100" Value="{Binding ProgressPercent, Mode=OneWay}"
                                                          IsVisible="{Binding ShowProgress}" />
-                                            <TextBlock Text="{Binding SizeText}" Classes="Caption" FontSize="11"
-                                                       HorizontalAlignment="Right" IsVisible="{Binding ShowSize}" />
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <TextBlock Grid.Column="0" Text="{Binding PhaseText}" Classes="Caption" FontSize="11"
+                                                           IsVisible="{Binding ShowPhase}" />
+                                                <TextBlock Grid.Column="0" Text="{Binding PeersText}" Classes="Caption" FontSize="11"
+                                                           IsVisible="{Binding ShowPeers}" />
+                                                <TextBlock Grid.Column="1" Text="{Binding SizeText}" Classes="Caption" FontSize="11"
+                                                           HorizontalAlignment="Right" IsVisible="{Binding ShowSize}" />
+                                            </Grid>
                                         </StackPanel>
                                     </Border>
                                 </DataTemplate>

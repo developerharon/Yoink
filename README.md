@@ -1,8 +1,8 @@
 # Yoink
 
-Grab a video, keep watching. Yoink is a free, source-available download manager — it started as a YouTube
-downloader and now handles general direct-link file downloads too, built to feel like a real desktop app
-on Linux rather than an afterthought next to Windows.
+Yoink is a free, source-available download manager — YouTube videos, torrents, and any other direct-link
+file, all in one queue. Built to feel like a real desktop app on Linux rather than an afterthought next to
+Windows.
 
 It's a hobby project, built purely because making it was fun — see [License](#license) below for what that
 means for how you can use it.
@@ -10,11 +10,12 @@ means for how you can use it.
 ## What it is
 
 Paste a URL and Yoink queues it up. A YouTube link resolves via `yt-dlp`, downloads video and audio, and
-merges them with `ffmpeg`; any other direct link (a PDF, an installer, an archive, whatever) downloads
-straight to disk over multiple connections at once for full speed. Either way it lands in the same live
-queue you can pause, resume, retry, or reorder. Copy a YouTube link — or a link to a downloadable file — to
-your clipboard and it offers to grab that too. Close the window and it keeps working from the tray, with a
-desktop notification when each download finishes or fails.
+merges them with `ffmpeg`; a magnet link or a `.torrent` file downloads peer-to-peer, showing live
+seeder/leecher counts as it goes; any other direct link (a PDF, an installer, an archive, whatever)
+downloads straight to disk over multiple connections at once for full speed. Every kind lands in the same
+live queue you can pause, resume, retry, or reorder. Copy a YouTube link, a magnet link, or a link to a
+downloadable file to your clipboard and it offers to grab that too. Close the window and it keeps working
+from the tray, with a desktop notification when each download finishes or fails.
 
 Built with [Avalonia](https://avaloniaui.net/) on .NET 10, so it runs the same way on Linux, Windows, and
 macOS rather than being tied to Windows Forms.
@@ -76,8 +77,32 @@ macOS rather than being tied to Windows Forms.
 
 Grab the latest self-updating AppImage from this repo's
 [Releases page](https://github.com/developerharon/Yoink/releases/latest) — no separate site or account
-needed. Make it executable (`chmod +x Yoink.AppImage`) and run it; the app checks for new releases on its
-own from then on, prompting before it downloads or installs anything.
+needed.
+
+### Running the AppImage on Ubuntu
+
+Ubuntu 22.04 and newer don't ship the FUSE library AppImages need to mount themselves at runtime, so
+just `chmod`-ing and running one can fail with a `dlopen(): error loading libfuse.so.2`-style error (or
+just silently do nothing). Install it once, then run the AppImage as normal:
+
+```
+sudo apt install libfuse2t64   # Ubuntu 24.04 and newer
+sudo apt install libfuse2      # Ubuntu 22.04 and older
+
+chmod +x Yoink.AppImage
+./Yoink.AppImage
+```
+
+Prefer not to install anything system-wide? Every AppImage also has a built-in FUSE-free fallback —
+slower to start each time (it unpacks itself into a temp folder first), but needs nothing installed:
+
+```
+chmod +x Yoink.AppImage
+./Yoink.AppImage --appimage-extract-and-run
+```
+
+Either way, the app checks for new releases on its own from then on, prompting before it downloads or
+installs anything.
 
 Linux (Ubuntu/AppImage) is the only packaged platform for now — Windows and macOS builds are pending
 real-hardware verification. Until those are out, running from source is the way to use it there too — see
@@ -104,23 +129,27 @@ you'd rather manage them yourself (a distro package, a version you're pinning, e
    ```
    dotnet run --project Yoink
    ```
-3. Click "+ Add download" and paste a URL — a YouTube link, or a link to any other file — then click
-   "Add to queue".
+3. Click "+ Add download" and paste a URL — a YouTube link, a magnet link, or a link to any other file
+   (or browse for a local `.torrent` file) — then click "Add to queue".
 
 ## Features
 
 - **Not just YouTube** — paste a link to any downloadable file (a PDF, an installer, an archive, ...) and
   Yoink grabs it too, over several connections at once for full speed, right alongside your video queue.
+- **Torrents, peer-to-peer** — paste a magnet link, or point Yoink at a `.torrent` file (a link or a local
+  file), and it downloads straight from the swarm, showing live seeder/leecher counts and progress. Once a
+  torrent finishes, Yoink stops connecting to peers entirely rather than continuing to seed in the
+  background — it's a download manager, not a long-running torrent client.
 - **Resumable downloads** — a killed or crashed download picks up where it left off instead of restarting,
-  YouTube or file.
+  whatever kind it is.
 - **Any resolution, reliably** — video and audio download separately and get merged locally, so quality
   isn't limited to whatever YouTube happens to still serve pre-merged.
 - **A real download queue** — pause, resume, cancel, retry, and reorder; every download, completed or
   failed, stays visible as history rather than disappearing. A completed download whose file later goes
   missing gets crossed out rather than silently claiming to still be there, and a re-download never
   silently overwrites an existing file with the same name.
-- **Clipboard auto-catch** — copy a YouTube link or a link to a downloadable file and Yoink offers to grab
-  it, no browser extension required.
+- **Clipboard auto-catch** — copy a YouTube link, a magnet link, or a link to a downloadable file and Yoink
+  offers to grab it, no browser extension required.
 - **Runs in the background** — a tray icon keeps it going with the window closed, with a desktop
   notification (Linux) when each download finishes or fails.
 - **Speed limits, concurrency & scheduling** — cap bandwidth per download or globally, control how many

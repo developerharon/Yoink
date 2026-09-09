@@ -20,7 +20,12 @@
          depending on the URL — visible feedback for what used to be a silent multi-second pause) ->
          PanelOptions -> queued. PanelOptions itself branches: PanelVideoOptions (resolution/container,
          built from what yt-dlp actually reported for that video) is shown for a YouTube URL and
-         hidden for a generic file, where TxtFileMeta (size/type from the HTTP probe) shows instead. -->
+         hidden for a generic file or torrent, where TxtFileMeta (size/type from the HTTP probe, or a
+         torrent's own resolved size/file-count, or — for a magnet link, whose real size isn't known
+         until the download actually starts — a short explanatory line) shows instead. A torrent
+         source is either pasted into TxtUrl (a magnet link, or a direct URL to a .torrent file) or
+         picked via BtnBrowseTorrentFile (a local .torrent file — see AddDownloadDialog.axaml.cs for
+         how the two inputs don't fight each other). -->
     <Panel>
         <Border Margin="4" BorderBrush="{DynamicResource BorderBrush2}" BorderThickness="1" IsHitTestVisible="False" />
 
@@ -30,7 +35,14 @@
             <StackPanel Grid.Row="1" Margin="20,0,20,20" Spacing="14">
                 <StackPanel Name="PanelUrlEntry" Spacing="4">
                     <TextBlock Text="URL" Classes="Caption" />
-                    <TextBox Name="TxtUrl" PlaceholderText="A YouTube link, or a direct file link (PDF, .zip, .exe, ...)" />
+                    <TextBox Name="TxtUrl" TextChanged="TxtUrl_TextChanged"
+                             PlaceholderText="A YouTube link, a magnet link, or a direct file link (PDF, .torrent, ...)" />
+                    <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Margin="0,2,0,0">
+                        <TextBlock Text="or" Classes="Caption" VerticalAlignment="Center" />
+                        <Button Name="BtnBrowseTorrentFile" Content="Browse for a .torrent file…" FontSize="12"
+                                Click="BtnBrowseTorrentFile_Click" />
+                    </StackPanel>
+                    <TextBlock Name="TxtSelectedTorrentFile" Classes="Caption" IsVisible="False" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
 
                 <StackPanel Name="PanelLoading" Spacing="10" IsVisible="False">
