@@ -96,6 +96,25 @@ public class DownloadQueueServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task EnqueueAsync_PersistsInfoJson_WhenProvided()
+    {
+        // Views.AddDownloadDialog passes the already-resolved YtDlpVideoInfo.RawJson through
+        // alongside title/containerFormat (see EnqueueAsync's own doc comment) — round-trip it the
+        // same way EnqueueAsync_PersistsAnAlreadyResolvedTitleAndContainerFormat already does for
+        // those two.
+        CloseScheduleWindow();
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());
+
+        var enqueued = await queue.EnqueueAsync(
+            "https://youtu.be/abc123", 1080, title: "Some Resolved Title", infoJson: """{"id":"abc123"}""");
+
+        Assert.Equal("""{"id":"abc123"}""", enqueued.InfoJson);
+
+        var stored = Assert.Single(await queue.GetAllAsync());
+        Assert.Equal("""{"id":"abc123"}""", stored.InfoJson);
+    }
+
+    [Fact]
     public async Task EnqueueAsync_Rejects_BlankUrl()
     {
         using var queue = new DownloadQueueService(new YtDlpClient(), DbPath());

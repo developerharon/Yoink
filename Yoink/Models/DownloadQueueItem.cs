@@ -71,6 +71,22 @@ public sealed class DownloadQueueItem
     public string ContainerFormat { get; set; } = "mp4";
 
     public string? FilePath { get; set; }
+
+    /// <summary>
+    /// The raw yt-dlp JSON (<see cref="Services.YtDlpVideoInfo.RawJson"/>) <c>Views.AddDownloadDialog</c>
+    /// already resolved for this URL before enqueueing it, carried through so
+    /// <see cref="Services.DownloadQueueService.ProcessVideoItemAsync"/> can hand it straight to
+    /// <see cref="Services.YtDlpClient.DownloadAsync"/>'s own <c>infoJson</c> parameter instead of
+    /// making yt-dlp re-extract the same video from scratch — see that parameter's doc comment.
+    /// Persisted (unlike <see cref="DownloadedBytes"/>/<see cref="TotalBytes"/> above) since a fresh
+    /// row can sit <see cref="DownloadQueueStatus.Pending"/> across an app restart before it's ever
+    /// processed, but genuinely single-use: <c>ProcessVideoItemAsync</c> clears it back to null in
+    /// memory the moment it reads it (whether it actually used it or decided it was too stale — see
+    /// that method), and the next <c>PersistAsync</c> call writes that null back out, so this never
+    /// sits around bloating a queue that's deliberately never pruned.
+    /// </summary>
+    public string? InfoJson { get; set; }
+
     public DownloadQueueStatus Status { get; set; }
     public double Progress { get; set; }
     public string? ErrorMessage { get; set; }

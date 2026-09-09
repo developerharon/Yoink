@@ -204,7 +204,7 @@ public partial class AddDownloadDialog : Window
                 var resolution = int.Parse(resolutionText.TrimEnd('p'));
                 var containerFormat = ((ComboBoxItem)CboContainer.SelectedItem!).Content!.ToString()!.ToLowerInvariant();
 
-                await _queue!.EnqueueAsync(url, resolution, title: _resolvedInfo!.Title, containerFormat: containerFormat, kind: DownloadKind.Video);
+                await _queue!.EnqueueAsync(url, resolution, title: _resolvedInfo!.Title, containerFormat: containerFormat, kind: DownloadKind.Video, infoJson: _resolvedInfo.RawJson);
             }
             else
             {

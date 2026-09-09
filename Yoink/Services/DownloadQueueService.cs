@@ -122,12 +122,20 @@ public sealed class DownloadQueueService : IDisposable
     /// download starts the moment this item is dequeued instead of pausing to look the title up
     /// again first.
     /// </summary>
+    /// <param name="infoJson">
+    /// The same already-resolved video's <see cref="YtDlpVideoInfo.RawJson"/>, alongside
+    /// <paramref name="title"/> — see <see cref="DownloadQueueItem.InfoJson"/>'s own doc comment for
+    /// how <see cref="ProcessVideoItemAsync"/> uses (and clears) it. Meaningless without a
+    /// <paramref name="title"/> already set too, since <see cref="ProcessVideoItemAsync"/> only ever
+    /// looks at it once it already knows it doesn't need to resolve the title itself.
+    /// </param>
     public async Task<DownloadQueueItem> EnqueueAsync(
         string url,
         int resolution,
         string title = "",
         string containerFormat = "mp4",
         DownloadKind kind = DownloadKind.Video,
+        string? infoJson = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -137,9 +145,9 @@ public sealed class DownloadQueueService : IDisposable
         {
             await using var command = _connection.CreateCommand();
             command.CommandText = """
-                INSERT INTO download_queue (Url, Title, Resolution, ContainerFormat, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt, Kind)
+                INSERT INTO download_queue (Url, Title, Resolution, ContainerFormat, FilePath, Status, Progress, ErrorMessage, Position, CreatedAt, Kind, InfoJson)
                 VALUES ($url, $title, $resolution, $containerFormat, NULL, $status, 0, NULL,
-                        (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt, $kind);
+                        (SELECT COALESCE(MAX(Position), -1) + 1 FROM download_queue), $createdAt, $kind, $infoJson);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$url", url);
@@ -149,6 +157,7 @@ public sealed class DownloadQueueService : IDisposable
             command.Parameters.AddWithValue("$status", DownloadQueueStatus.Pending.ToString());
             command.Parameters.AddWithValue("$createdAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture));
             command.Parameters.AddWithValue("$kind", kind.ToString());
+            command.Parameters.AddWithValue("$infoJson", (object?)infoJson ?? DBNull.Value);
 
             return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
         }, cancellationToken).ConfigureAwait(false);
@@ -161,6 +170,7 @@ public sealed class DownloadQueueService : IDisposable
             Resolution = resolution,
             ContainerFormat = containerFormat,
             Kind = kind,
+            InfoJson = infoJson,
             Status = DownloadQueueStatus.Pending,
             CreatedAt = DateTimeOffset.Now
         };
@@ -456,6 +466,18 @@ public sealed class DownloadQueueService : IDisposable
         }
     }
 
+    /// <summary>
+    /// How long a resolved <see cref="DownloadQueueItem.InfoJson"/> is trusted before
+    /// <see cref="ProcessVideoItemAsync"/> discards it rather than handing it to
+    /// <see cref="YtDlpClient.DownloadAsync"/> — its format URLs are signed and time-limited, and an
+    /// item can sit <see cref="DownloadQueueStatus.Pending"/> a while behind
+    /// <c>AppSettings.MaxConcurrentDownloads</c>/scheduling before actually being processed. Deliberately
+    /// generous (not tuned to any real observed expiry) since <see cref="YtDlpClient.DownloadAsync"/>'s
+    /// own infoJson-failure retry is the actual backstop against a stale one slipping past this; this
+    /// check just avoids the doomed attempt (and its retry delay) in the common case of a long wait.
+    /// </summary>
+    private static readonly TimeSpan InfoJsonMaxAge = TimeSpan.FromMinutes(10);
+
     /// <summary>The original yt-dlp download path — unchanged in substance from before <see cref="DownloadKind"/> existed, just split out of <see cref="ProcessItemAsync"/> so that method can branch on kind.</summary>
     private async Task ProcessVideoItemAsync(DownloadQueueItem item, AppSettings settings, int? rateLimitKBps, CancellationToken cancellationToken)
     {
@@ -464,6 +486,15 @@ public sealed class DownloadQueueService : IDisposable
             var info = await _ytDlp.GetVideoInfoAsync(item.Url, cancellationToken).ConfigureAwait(false);
             item.Title = info.Title;
         }
+
+        // Single-use regardless of outcome (used or discarded as too stale) — see
+        // DownloadQueueItem.InfoJson's own doc comment for why this is cleared here rather than left
+        // for a later PersistAsync call to overwrite with the same value.
+        var infoJson = item.InfoJson;
+        item.InfoJson = null;
+        var infoJsonToUse = !string.IsNullOrEmpty(infoJson) && DateTimeOffset.Now - item.CreatedAt < InfoJsonMaxAge
+            ? infoJson
+            : null;
 
         item.FilePath ??= BuildDestinationPath(item.Title, ResolveDownloadFolder(settings), item.ContainerFormat);
 
@@ -484,6 +515,7 @@ public sealed class DownloadQueueService : IDisposable
             rateLimitKBps: rateLimitKBps,
             containerFormat: item.ContainerFormat,
             progress: progress,
+            infoJson: infoJsonToUse,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -625,7 +657,7 @@ public sealed class DownloadQueueService : IDisposable
             await using var command = _connection.CreateCommand();
             command.CommandText = """
                 UPDATE download_queue
-                SET Title = $title, FilePath = $filePath, Status = $status, Progress = $progress, ErrorMessage = $errorMessage
+                SET Title = $title, FilePath = $filePath, Status = $status, Progress = $progress, ErrorMessage = $errorMessage, InfoJson = $infoJson
                 WHERE Id = $id
                 """;
             command.Parameters.AddWithValue("$title", item.Title);
@@ -633,6 +665,7 @@ public sealed class DownloadQueueService : IDisposable
             command.Parameters.AddWithValue("$status", item.Status.ToString());
             command.Parameters.AddWithValue("$progress", item.Progress);
             command.Parameters.AddWithValue("$errorMessage", (object?)item.ErrorMessage ?? DBNull.Value);
+            command.Parameters.AddWithValue("$infoJson", (object?)item.InfoJson ?? DBNull.Value);
             command.Parameters.AddWithValue("$id", item.Id);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
@@ -651,13 +684,14 @@ public sealed class DownloadQueueService : IDisposable
     /// </summary>
     private readonly record struct ColumnOrdinals(
         int Id, int Url, int Title, int Resolution, int ContainerFormat, int FilePath,
-        int Status, int Progress, int ErrorMessage, int Position, int CreatedAt, int Kind)
+        int Status, int Progress, int ErrorMessage, int Position, int CreatedAt, int Kind, int InfoJson)
     {
         public static ColumnOrdinals FromReader(SqliteDataReader reader) => new(
             reader.GetOrdinal("Id"), reader.GetOrdinal("Url"), reader.GetOrdinal("Title"),
             reader.GetOrdinal("Resolution"), reader.GetOrdinal("ContainerFormat"), reader.GetOrdinal("FilePath"),
             reader.GetOrdinal("Status"), reader.GetOrdinal("Progress"), reader.GetOrdinal("ErrorMessage"),
-            reader.GetOrdinal("Position"), reader.GetOrdinal("CreatedAt"), reader.GetOrdinal("Kind"));
+            reader.GetOrdinal("Position"), reader.GetOrdinal("CreatedAt"), reader.GetOrdinal("Kind"),
+            reader.GetOrdinal("InfoJson"));
     }
 
     private static DownloadQueueItem ReadItem(SqliteDataReader reader) => ReadItem(reader, ColumnOrdinals.FromReader(reader));
@@ -676,7 +710,8 @@ public sealed class DownloadQueueService : IDisposable
         Position = reader.GetInt32(o.Position),
         CreatedAt = DateTimeOffset.Parse(
             reader.GetString(o.CreatedAt), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-        Kind = Enum.Parse<DownloadKind>(reader.GetString(o.Kind))
+        Kind = Enum.Parse<DownloadKind>(reader.GetString(o.Kind)),
+        InfoJson = reader.IsDBNull(o.InfoJson) ? null : reader.GetString(o.InfoJson)
     };
 
     /// <summary>
@@ -715,6 +750,12 @@ public sealed class DownloadQueueService : IDisposable
         // row predates DownloadKind entirely, and "Video" (yt-dlp) is exactly what all of them
         // already were before this column existed.
         EnsureColumnExists("Kind", "TEXT NOT NULL DEFAULT 'Video'");
+
+        // Same reasoning again, added for the --load-info-json plumbing (see
+        // DownloadQueueItem.InfoJson's doc comment) — nullable, no default needed since every
+        // pre-existing row simply has nothing to reuse, same as a freshly-enqueued item with no
+        // title yet.
+        EnsureColumnExists("InfoJson", "TEXT");
     }
 
     private void EnsureColumnExists(string columnName, string columnDefinitionSql)

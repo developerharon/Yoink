@@ -31,12 +31,27 @@ public sealed record YtDlpFormat(
     public bool HasAudio => !string.IsNullOrEmpty(AudioCodec) && AudioCodec != "none";
 }
 
-/// <summary>A single video's metadata and the formats it's available in.</summary>
+/// <summary>
+/// A single video's metadata and the formats it's available in.
+/// </summary>
+/// <param name="RawJson">
+/// The exact JSON object yt-dlp's own `--dump-json` printed for this video (via
+/// <see cref="JsonElement.GetRawText"/> in <see cref="YtDlpClient.ParseVideoInfo"/> — reconstructed
+/// from the parsed element rather than threaded through separately, so this stays populated for
+/// every caller without <see cref="YtDlpClient.GetVideoInfoAsync"/> needing to pass anything extra
+/// through). Exists purely so a caller that already resolved a video (<c>Views.AddDownloadDialog</c>)
+/// can hand this straight back to <see cref="YtDlpClient.DownloadAsync"/>'s own <c>infoJson</c>
+/// parameter via `--load-info-json`, skipping yt-dlp's second, redundant full extraction when the
+/// download actually starts — see that parameter's doc comment, and the yt-dlp-startup-latency
+/// project memory, for the ~3-6s/invocation this saves. Null for a <see cref="YtDlpVideoInfo"/> built
+/// any other way (e.g. directly in a test via the positional constructor).
+/// </param>
 public sealed record YtDlpVideoInfo(
     string Id,
     string Title,
     string WebpageUrl,
-    IReadOnlyList<YtDlpFormat> Formats);
+    IReadOnlyList<YtDlpFormat> Formats,
+    string? RawJson = null);
 
 /// <summary>One entry from a playlist/channel URL, as reported by yt-dlp's flat-playlist listing.</summary>
 public sealed record YtDlpPlaylistEntry(string Id, string Title, string Url);
@@ -259,6 +274,25 @@ public sealed class YtDlpClient
     /// <see cref="DefaultStallTimeout"/>; only overridden by Yoink.Tests, which need a much shorter
     /// value to exercise this without a multi-minute test run.
     /// </param>
+    /// <param name="infoJson">
+    /// A previously-resolved video's raw <see cref="YtDlpVideoInfo.RawJson"/> (typically from a
+    /// <see cref="GetVideoInfoAsync"/> call the caller already made, e.g. to build a resolution
+    /// picker), passed to yt-dlp as `--load-info-json` instead of the bare <paramref name="url"/>.
+    /// This skips yt-dlp's own webpage/player-API/m3u8 re-extraction entirely — it already has
+    /// everything it needs — which is otherwise a second full extraction on top of whatever already
+    /// happened to resolve <paramref name="formatSelector"/>'s options in the first place; see the
+    /// yt-dlp-startup-latency project memory for the ~3-6s/invocation this saves. Null (the default)
+    /// falls back to the original behavior of extracting fresh from <paramref name="url"/> — the only
+    /// option when nothing was resolved beforehand (e.g. a bare enqueue with no title yet).
+    ///
+    /// The resolved format URLs an info-json carries are signed and time-limited, so this is only a
+    /// safe shortcut when the download actually starts soon after the info was resolved — a caller
+    /// should avoid passing an old one (see <c>DownloadQueueService.ProcessVideoItemAsync</c>'s own
+    /// age check). As a backstop against passing a stale one anyway, a failed download that used
+    /// <paramref name="infoJson"/> is retried exactly once with a fresh <paramref name="url"/>
+    /// extraction before actually failing — a genuinely bad/unavailable URL still fails either way,
+    /// just one attempt later.
+    /// </param>
     public async Task DownloadAsync(
         string url,
         string formatSelector,
@@ -268,6 +302,7 @@ public sealed class YtDlpClient
         string containerFormat = "mp4",
         IProgress<YtDlpDownloadProgress>? progress = null,
         TimeSpan? stallTimeout = null,
+        string? infoJson = null,
         CancellationToken cancellationToken = default)
     {
         var directory = Path.GetDirectoryName(destinationPath);
@@ -302,48 +337,87 @@ public sealed class YtDlpClient
             arguments.Add($"{rateLimitKBps.Value}K");
         }
 
-        // See GetVideoInfoAsync's doc comment for why "--" has to precede url here too.
-        arguments.Add("--");
-        arguments.Add(url);
-
-        using var process = CreateProcess(arguments);
+        string? infoJsonPath = null;
+        if (infoJson is not null)
+        {
+            // yt-dlp doesn't need (or want) the URL positional argument alongside this — the info
+            // file already carries it, plus every resolved format's own URL. Written to a fresh
+            // temp file per call (never reused/cached) since yt-dlp reads it, not stdin.
+            infoJsonPath = Path.Combine(Path.GetTempPath(), $"yoink-info-{Guid.NewGuid():N}.json");
+            await File.WriteAllTextAsync(infoJsonPath, infoJson, cancellationToken).ConfigureAwait(false);
+            arguments.Add("--load-info-json");
+            arguments.Add(infoJsonPath);
+        }
+        else
+        {
+            // See GetVideoInfoAsync's doc comment for why "--" has to precede url here too.
+            arguments.Add("--");
+            arguments.Add(url);
+        }
 
         try
         {
-            StartProcess(process);
+            using var process = CreateProcess(arguments);
+
+            try
+            {
+                StartProcess(process);
+            }
+            catch (Win32Exception ex)
+            {
+                throw new InvalidOperationException(
+                    "Could not run yt-dlp. Make sure it's installed and available on PATH.", ex);
+            }
+
+            var activity = new ActivityTracker();
+            var stderr = new StringBuilder();
+            var stderrTask = DrainAsync(process.StandardError, stderr, cancellationToken, activity.Mark);
+            var stdoutTask = DrainStdOutForProgressAsync(process.StandardOutput, expectedSegmentCount, progress, cancellationToken, activity.Mark);
+
+            await WaitForExitOrStallAsync(process, activity, stallTimeout ?? DefaultStallTimeout, cancellationToken)
+                .ConfigureAwait(false);
+
+            // yt-dlp itself exiting is what actually determines success/failure — don't keep
+            // blocking on the stdout/stderr pipes reaching EOF past this point. yt-dlp's merge step
+            // spawns ffmpeg as a child, which inherits those same redirected handles; if anything
+            // about it lingers even briefly past yt-dlp's own exit (observed in practice — a
+            // download whose final file was already complete on disk still sat "Active" forever),
+            // the pipe's write end stays open and ReadLineAsync/DrainAsync would otherwise wait for
+            // an EOF that never comes. A short grace period still lets an already-finished drain
+            // collect whatever's left in the buffer without reintroducing that hang.
+            await Task.WhenAny(Task.WhenAll(stdoutTask, stderrTask), Task.Delay(TimeSpan.FromSeconds(2)))
+                .ConfigureAwait(false);
+
+            if (process.ExitCode != 0)
+            {
+                if (infoJson is not null)
+                {
+                    // Most likely the reused info's signed format URLs simply expired (this item sat
+                    // Pending behind a concurrency/schedule limit longer than expected) rather than a
+                    // real failure — see this parameter's own doc comment. One fresh, ordinary
+                    // extraction from the URL is worth trying before actually giving up on it.
+                    await DownloadAsync(
+                        url, formatSelector, destinationPath, expectedSegmentCount, rateLimitKBps,
+                        containerFormat, progress, stallTimeout, infoJson: null, cancellationToken)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                throw new InvalidOperationException($"yt-dlp failed: {ExtractErrorSummary(stderr.ToString())}");
+            }
+
+            // The Completed status this leads to in DownloadQueueService hides progress/size display
+            // entirely (see DownloadQueueItem.ShowProgress), so there's no need to preserve the last
+            // known byte counts here — a bare 100% is enough for whatever briefly reads this.
+            progress?.Report(new YtDlpDownloadProgress(1.0, null, null));
         }
-        catch (Win32Exception ex)
+        finally
         {
-            throw new InvalidOperationException(
-                "Could not run yt-dlp. Make sure it's installed and available on PATH.", ex);
+            if (infoJsonPath is not null)
+            {
+                try { File.Delete(infoJsonPath); } catch { /* best-effort cleanup, matches the pattern used elsewhere in this codebase */ }
+            }
         }
-
-        var activity = new ActivityTracker();
-        var stderr = new StringBuilder();
-        var stderrTask = DrainAsync(process.StandardError, stderr, cancellationToken, activity.Mark);
-        var stdoutTask = DrainStdOutForProgressAsync(process.StandardOutput, expectedSegmentCount, progress, cancellationToken, activity.Mark);
-
-        await WaitForExitOrStallAsync(process, activity, stallTimeout ?? DefaultStallTimeout, cancellationToken)
-            .ConfigureAwait(false);
-
-        // yt-dlp itself exiting is what actually determines success/failure — don't keep
-        // blocking on the stdout/stderr pipes reaching EOF past this point. yt-dlp's merge step
-        // spawns ffmpeg as a child, which inherits those same redirected handles; if anything
-        // about it lingers even briefly past yt-dlp's own exit (observed in practice — a
-        // download whose final file was already complete on disk still sat "Active" forever),
-        // the pipe's write end stays open and ReadLineAsync/DrainAsync would otherwise wait for
-        // an EOF that never comes. A short grace period still lets an already-finished drain
-        // collect whatever's left in the buffer without reintroducing that hang.
-        await Task.WhenAny(Task.WhenAll(stdoutTask, stderrTask), Task.Delay(TimeSpan.FromSeconds(2)))
-            .ConfigureAwait(false);
-
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException($"yt-dlp failed: {ExtractErrorSummary(stderr.ToString())}");
-
-        // The Completed status this leads to in DownloadQueueService hides progress/size display
-        // entirely (see DownloadQueueItem.ShowProgress), so there's no need to preserve the last
-        // known byte counts here — a bare 100% is enough for whatever briefly reads this.
-        progress?.Report(new YtDlpDownloadProgress(1.0, null, null));
     }
 
     /// <summary>
@@ -437,7 +511,7 @@ public sealed class YtDlpClient
             }
         }
 
-        return new YtDlpVideoInfo(id, title, webpageUrl, formats);
+        return new YtDlpVideoInfo(id, title, webpageUrl, formats, RawJson: root.GetRawText());
     }
 
     private static string? GetOptionalString(JsonElement element, string property) =>
