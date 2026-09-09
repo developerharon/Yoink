@@ -90,6 +90,19 @@ public sealed class DownloadQueueItem
     /// </summary>
     public string ContainerFormat { get; set; } = "mp4";
 
+    /// <summary>
+    /// Where this specific download should land — set once, at enqueue time, in
+    /// <c>Views.AddDownloadDialog</c>'s "Save to" picker; null means "use whatever's configured in
+    /// Settings" (<see cref="Services.DownloadQueueService.ResolveDownloadFolder"/>'s own fallback
+    /// chain — <c>AppSettings.DownloadFolder</c> if set, else the platform's Downloads folder), the
+    /// same as before this existed. Lets one download go to, say, a Music folder and another to an
+    /// Apps folder without changing the app-wide default for everything else. See
+    /// <see cref="Services.DownloadQueueService.ResolveItemDestinationFolder"/> for exactly how this
+    /// combines with the app-wide setting. Fixed at enqueue time, never changed afterwards — same
+    /// "set once, read many times" shape as <see cref="ContainerFormat"/>.
+    /// </summary>
+    public string? DestinationFolder { get; set; }
+
     public string? FilePath { get; set; }
 
     /// <summary>

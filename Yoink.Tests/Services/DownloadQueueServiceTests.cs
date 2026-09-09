@@ -274,6 +274,44 @@ public class DownloadQueueServiceTests : IDisposable
     }
 
     /// <summary>
+    /// A per-download folder override (EnqueueAsync's destinationFolder parameter, set in production
+    /// by Views.AddDownloadDialog's "Save to" picker) lands the file there instead of the app-wide
+    /// AppSettings.DownloadFolder default — the actual point of the feature: group music in one
+    /// folder, apps in another, everything else using the configured default, all from the same
+    /// running app. A second item enqueued with no override in the same test confirms the app-wide
+    /// default is untouched by the first one's override.
+    /// </summary>
+    [Fact(Timeout = 20_000)]
+    public async Task EnqueueAsync_WithDestinationFolderOverride_DownloadsThereInsteadOfTheDefault()
+    {
+        var content = new byte[64 * 1024];
+        new Random(17).NextBytes(content);
+        using var server = new RangeSupportingTestServer(content);
+
+        var defaultFolder = Path.Combine(_tempDir, "default-downloads");
+        var overrideFolder = Path.Combine(_tempDir, "music");
+        Directory.CreateDirectory(defaultFolder);
+        SettingsService.Save(new AppSettings { DownloadFolder = defaultFolder });
+
+        using var queue = new DownloadQueueService(new YtDlpClient(), DbPath(), TorrentCacheDir());
+
+        var overridden = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, kind: DownloadKind.File, destinationFolder: overrideFolder);
+        Assert.Equal(overrideFolder, overridden.DestinationFolder);
+
+        var completedOverride = await queue.WaitForCompletionAsync(overridden.Id);
+        Assert.Equal(DownloadQueueStatus.Completed, completedOverride.Status);
+        Assert.Equal(overrideFolder, Path.GetDirectoryName(completedOverride.FilePath));
+        Assert.Equal(content, await File.ReadAllBytesAsync(completedOverride.FilePath!));
+
+        // No override — still falls back to the app-wide default, unaffected by the override above.
+        var defaulted = await queue.EnqueueAsync(server.Uri.ToString(), resolution: 0, kind: DownloadKind.File);
+        Assert.Null(defaulted.DestinationFolder);
+
+        var completedDefault = await queue.WaitForCompletionAsync(defaulted.Id);
+        Assert.Equal(defaultFolder, Path.GetDirectoryName(completedDefault.FilePath));
+    }
+
+    /// <summary>
     /// "One-on-one relation between a download file and the download list": a Completed item whose
     /// file gets deleted (or moved — same observable effect) out from under Yoink is crossed out as
     /// Missing rather than going on claiming "Completed" for a file that's no longer there. Calls

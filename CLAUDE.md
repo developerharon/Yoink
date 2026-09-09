@@ -55,7 +55,8 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
   combination of per-download/global caps), `BuildFormatSelector`/`BuildDestinationPath`/
   `BuildFileDestinationPath`/`BuildTorrentDestinationPath`/`ResolveDownloadFolder`, `InsertPathSuffix`
   (including its `isDirectory` overload — a torrent directory name containing a genuine dot, e.g.
-  "Ubuntu 24.04", must not have that dot misread as a file extension), and
+  "Ubuntu 24.04", must not have that dot misread as a file extension), `ResolveItemDestinationFolder`
+  (an item's own override wins when set, else falls back to `ResolveDownloadFolder`), and
   `SettingsService.GetDefaultDownloadFolder`/`ParseXdgDownloadDir` (the freedesktop.org
   user-dirs.dirs parsing behind the Linux default-Downloads-folder guess).
 - `Services/DownloadQueueServiceTests` — real `DownloadQueueService` instances against a temp SQLite
@@ -72,7 +73,10 @@ sequentially (`[assembly: CollectionBehavior(DisableTestParallelization = true)]
   never "within") so the background loop never dequeues anything mid-test, rather than racing it. A
   `DownloadKind.Torrent`-specific test drives `CheckForMissingFilesAsync` against a row updated
   directly (no real swarm available in a test) to `Completed` with a real directory as `FilePath`,
-  confirming it's *not* misflagged `Missing` the way a naive `File.Exists`-only check would.
+  confirming it's *not* misflagged `Missing` the way a naive `File.Exists`-only check would. Another
+  real end-to-end test enqueues one item with a `destinationFolder` override and one without against
+  the same real local HTTP server, confirming the override lands its file in the override folder while
+  a plain item right alongside it still lands in the app-wide default, unaffected.
 - `Services/ClipboardWatcherServiceTests` — the real background poll loop (given a fast poll interval)
   against fake clipboard-read/is-enabled delegates: every recognized YouTube URL/downloadable-file/
   torrent-source shape, negative cases, fires-once-per-change, and respects the enabled/disabled
@@ -308,6 +312,16 @@ project root — that's exactly the flat structure this reorg moved away from.
     `.torrent` file, by contrast, already has its full contents on hand (or one quick download away)
     with no swarm involved, so it resolves fully here (name, total size, file count) via
     `TorrentEngine.LoadTorrentAsync`, same as the generic-file path.
+  - **"Save to" (per-download folder override)**: a read-only `TextBox` + Browse/Reset row, shown in
+    `PanelOptions` for every kind (not just video — sits below `PanelVideoOptions`, outside it), same
+    idiom as `Views.SettingsView`'s own download-folder row but writing to the private
+    `_destinationFolderOverride` field instead of persisting to `AppSettings` — this choice is for
+    *this* download only. Seeded from `DownloadQueueService.ResolveDownloadFolder(SettingsService.Load())`
+    at the top of every `ResolveAsync` attempt (including a retry after a failed one, so a stale
+    override from a previous attempt never silently carries over to an unrelated item), so the common
+    case — just use the configured default — needs no interaction at all. Stays `null` (meaning "no
+    override, use Settings") unless the user actually browses for something else; passed straight
+    through to `DownloadQueueService.EnqueueAsync`'s `destinationFolder` parameter for all three kinds.
 - `UpdatePromptDialog.axaml` / `.axaml.cs` — the update/distribution story's UI half (see `UpdateService`
   below for the mechanism). Shows the new version + release notes with "Install Update"/"Later" buttons;
   clicking "Install Update" downloads (progress bar, reusing the same pattern as everywhere else) then
@@ -579,6 +593,15 @@ project root — that's exactly the flat structure this reorg moved away from.
     `SettingsService.GetDefaultDownloadFolder()`'s platform-Downloads-folder guess (see that method's doc
     comment). Both are read fresh from `SettingsService.Load()` inside `ProcessItemAsync`, same as the
     speed-limit settings right below it.
+    - **Per-download override**: `EnqueueAsync`'s `destinationFolder` parameter (`Views.AddDownloadDialog`'s
+      "Save to" picker is the only caller that passes a real value) persists onto
+      `DownloadQueueItem.DestinationFolder`, a nullable column added via the same `EnsureColumnExists`
+      migration pattern. All three `Process*ItemAsync` methods call `ResolveItemDestinationFolder(item,
+      settings)` instead of the bare `ResolveDownloadFolder(settings)` now — the item's own override if
+      it has one, else exactly the same app-wide default as before. Set once at enqueue time, like
+      `ContainerFormat`; there's no way to change it after the fact for an already-queued item (retrying
+      a `Failed`/`Canceled`/`Missing` item reuses its already-resolved `FilePath` and never re-consults
+      this anyway, same as it never re-consults the app-wide setting either).
   - **One-on-one relation between a download file and its queue row**: two related pieces, both added
     together. First, **no more silent overwrite of a same-named download**: `BuildDestinationPath`/
     `BuildFileDestinationPath`'s result is no longer used as `item.FilePath` directly — it's a
@@ -725,7 +748,11 @@ project root — that's exactly the flat structure this reorg moved away from.
   never-persisted reasoning as `DownloadedBytes`/`TotalBytes`) driving `ShowPeers`/`PeersText` and
   `ShowPhase` in the queue row — `PhaseText` ("Fetching torrent metadata…", "Checking existing
   files…") and `ShowSize`/`ShowPeers` are mutually exclusive (all three bind to the same spot in the
-  row) so a torrent never shows two overlapping captions during the same tick.
+  row) so a torrent never shows two overlapping captions during the same tick. `DestinationFolder`
+  (nullable, set once at enqueue time via `Views.AddDownloadDialog`'s "Save to" picker) is this one
+  download's folder override — null means "use whatever `AppSettings.DownloadFolder`/Settings resolves
+  to", same as every row before this existed; see `DownloadQueueService.ResolveItemDestinationFolder`
+  for exactly how the two combine.
 
 ### Converters (`Yoink/Converters/`)
 

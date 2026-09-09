@@ -56,7 +56,7 @@
 
             <ui:FASettingsExpander Header="Downloads" IconSource="Download" IsExpanded="True">
                 <ui:FASettingsExpanderItem Content="Download folder"
-                                            Description="Where finished downloads are saved.">
+                                            Description="Where finished downloads are saved by default — override it for one download at a time in Add Download's own Save to picker.">
                     <ui:FASettingsExpanderItem.Footer>
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <TextBox Name="TxtDownloadFolder" Width="260" IsReadOnly="True" />

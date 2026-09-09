@@ -43,6 +43,14 @@ namespace Yoink.Views;
 /// checks above; <see cref="TxtUrl_TextChanged"/> clears it back to null the moment the user types
 /// into <see cref="TxtUrl"/> instead, so whichever input the user touched last is the one that wins
 /// rather than both silently fighting over which source actually gets resolved.
+///
+/// "Save to" (<see cref="TxtDestinationFolder"/>) is shown for every kind, not just video, and lets
+/// this one download override the app-wide default folder — same read-only-TextBox + Browse/Reset
+/// idiom as <c>Views.SettingsView</c>'s own download-folder row, seeded from whatever Settings
+/// currently resolves to so the common case (just use the configured default) needs no interaction.
+/// <see cref="_destinationFolderOverride"/> stays null until the user actually browses for something
+/// else; null is exactly what <see cref="DownloadQueueService.EnqueueAsync"/>'s own
+/// <c>destinationFolder</c> parameter means "no override, use Settings".
 /// </summary>
 public partial class AddDownloadDialog : Window
 {
@@ -54,6 +62,7 @@ public partial class AddDownloadDialog : Window
     private DownloadKind _detectedKind = DownloadKind.Video;
     private Stage _stage = Stage.UrlEntry;
     private string? _localTorrentFilePath;
+    private string? _destinationFolderOverride;
 
     /// <summary>
     /// The exact source string actually resolved — set once, at the top of <see cref="ResolveAsync"/>,
@@ -127,6 +136,13 @@ public partial class AddDownloadDialog : Window
         _detectedKind = _localTorrentFilePath is not null || DownloadUrlKind.IsTorrentSource(source)
             ? DownloadKind.Torrent
             : DownloadUrlKind.IsYouTubeUrl(source) ? DownloadKind.Video : DownloadKind.File;
+
+        // Reset to "no override" at the start of every resolve attempt (including a retry after a
+        // failed one) rather than only once at construction — otherwise an override picked before a
+        // failed resolve would silently carry over into a completely different resolved item.
+        _destinationFolderOverride = null;
+        TxtDestinationFolder.Text = DownloadQueueService.ResolveDownloadFolder(SettingsService.Load());
+
         SetStage(Stage.Loading);
 
         switch (_detectedKind)
@@ -285,6 +301,57 @@ public partial class AddDownloadDialog : Window
     }
 
     /// <summary>
+    /// Lets this one download override the app-wide default folder — same
+    /// <see cref="IStorageProvider"/> folder-picker mechanism <c>Views.SettingsView</c>'s own download
+    /// folder Browse button already uses, but writes to <see cref="_destinationFolderOverride"/>
+    /// instead of persisting to <c>AppSettings</c>: this choice is for this download only.
+    /// </summary>
+    private async void BtnBrowseDestinationFolder_Click(object? sender, RoutedEventArgs e)
+    {
+        var storageProvider = TopLevel.GetTopLevel(this)?.StorageProvider;
+        if (storageProvider is null)
+            return;
+
+        var startLocation = await TryGetStartFolderAsync(storageProvider, TxtDestinationFolder.Text);
+
+        var result = await storageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = "Choose a folder for this download",
+            AllowMultiple = false,
+            SuggestedStartLocation = startLocation
+        });
+
+        var folder = result.Count > 0 ? result[0].TryGetLocalPath() : null;
+        if (string.IsNullOrWhiteSpace(folder))
+            return;
+
+        _destinationFolderOverride = folder;
+        TxtDestinationFolder.Text = folder;
+    }
+
+    private void BtnResetDestinationFolder_Click(object? sender, RoutedEventArgs e)
+    {
+        _destinationFolderOverride = null;
+        TxtDestinationFolder.Text = DownloadQueueService.ResolveDownloadFolder(SettingsService.Load());
+    }
+
+    /// <summary>Best-effort: an unset/no-longer-existing path just opens the picker at its own platform-chosen default rather than failing the whole click — same as Views.SettingsView's own copy of this.</summary>
+    private static async Task<IStorageFolder?> TryGetStartFolderAsync(IStorageProvider storageProvider, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        try
+        {
+            return await storageProvider.TryGetFolderFromPathAsync(path);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Every distinct height yt-dlp actually reported a video-capable format for, highest first
     /// (so the best available quality is the default) — replacing the old fixed 360/480/720/1080/
     /// 1440 list, which both guessed at what was actually available for a given video and had no
@@ -322,7 +389,7 @@ public partial class AddDownloadDialog : Window
                     var resolution = int.Parse(resolutionText.TrimEnd('p'));
                     var containerFormat = ((ComboBoxItem)CboContainer.SelectedItem!).Content!.ToString()!.ToLowerInvariant();
 
-                    await _queue!.EnqueueAsync(source, resolution, title: _resolvedInfo!.Title, containerFormat: containerFormat, kind: DownloadKind.Video, infoJson: _resolvedInfo.RawJson);
+                    await _queue!.EnqueueAsync(source, resolution, title: _resolvedInfo!.Title, containerFormat: containerFormat, kind: DownloadKind.Video, infoJson: _resolvedInfo.RawJson, destinationFolder: _destinationFolderOverride);
                     break;
                 }
                 case DownloadKind.Torrent:
@@ -334,13 +401,13 @@ public partial class AddDownloadDialog : Window
                     // DownloadQueueService.ProcessTorrentItemAsync's own progress reporting
                     // overwrites it with the real resolved name the moment metadata arrives.
                     var title = TxtResolvedTitle.Text ?? "Torrent";
-                    await _queue!.EnqueueAsync(source, resolution: 0, title: title, kind: DownloadKind.Torrent);
+                    await _queue!.EnqueueAsync(source, resolution: 0, title: title, kind: DownloadKind.Torrent, destinationFolder: _destinationFolderOverride);
                     break;
                 }
                 default:
                 {
                     var fileName = TxtResolvedTitle.Text ?? DownloadEngine.GetFileNameFromUri(new Uri(source));
-                    await _queue!.EnqueueAsync(source, resolution: 0, title: fileName, kind: DownloadKind.File);
+                    await _queue!.EnqueueAsync(source, resolution: 0, title: fileName, kind: DownloadKind.File, destinationFolder: _destinationFolderOverride);
                     break;
                 }
             }
