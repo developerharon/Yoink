@@ -77,8 +77,32 @@ macOS rather than being tied to Windows Forms.
 
 Grab the latest self-updating AppImage from this repo's
 [Releases page](https://github.com/developerharon/Yoink/releases/latest) — no separate site or account
-needed. Make it executable (`chmod +x Yoink.AppImage`) and run it; the app checks for new releases on its
-own from then on, prompting before it downloads or installs anything.
+needed.
+
+### Running the AppImage on Ubuntu
+
+Ubuntu 22.04 and newer don't ship the FUSE library AppImages need to mount themselves at runtime, so
+just `chmod`-ing and running one can fail with a `dlopen(): error loading libfuse.so.2`-style error (or
+just silently do nothing). Install it once, then run the AppImage as normal:
+
+```
+sudo apt install libfuse2t64   # Ubuntu 24.04 and newer
+sudo apt install libfuse2      # Ubuntu 22.04 and older
+
+chmod +x Yoink.AppImage
+./Yoink.AppImage
+```
+
+Prefer not to install anything system-wide? Every AppImage also has a built-in FUSE-free fallback —
+slower to start each time (it unpacks itself into a temp folder first), but needs nothing installed:
+
+```
+chmod +x Yoink.AppImage
+./Yoink.AppImage --appimage-extract-and-run
+```
+
+Either way, the app checks for new releases on its own from then on, prompting before it downloads or
+installs anything.
 
 Linux (Ubuntu/AppImage) is the only packaged platform for now — Windows and macOS builds are pending
 real-hardware verification. Until those are out, running from source is the way to use it there too — see
